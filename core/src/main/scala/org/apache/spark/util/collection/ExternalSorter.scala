@@ -177,6 +177,14 @@ private[spark] class ExternalSorter[K, V, C](
     }
   })
 
+  private def comparator: Option[Comparator[K]] = {
+    if (ordering.isDefined || aggregator.isDefined) {
+      Some(keyComparator)
+    } else {
+      None
+    }
+  }
+
   // Information about a spilled file. Includes sizes in bytes of "batches" written by the
   // serializer as we periodically reset its stream, as well as number of elements in each
   // partition, used to efficiently keep track of partitions when merging.
@@ -826,14 +834,6 @@ private[spark] class ExternalSorter[K, V, C](
   private def groupByPartition(data: Iterator[((PartitionId, K), C)]): PartitionedIterator = {
     val buffered = data.buffered
     (0 until numPartitions).iterator.map(p => (p, new IteratorForPartition(p, buffered)))
-  }
-
-  private def comparator: Option[Comparator[K]] = {
-    if (ordering.isDefined || aggregator.isDefined) {
-      Some(keyComparator)
-    } else {
-      None
-    }
   }
 
   /**
