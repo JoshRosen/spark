@@ -99,6 +99,9 @@ private[spark] class ExternalSorter[K, V, C](
     serializer: Option[Serializer] = None)
   extends Logging with Spillable[WritablePartitionedPairCollection[K, C]] {
 
+  type PartitionId = Int
+  type PartitionedIterator = Iterator[(PartitionId, Iterator[Product2[K, C]])]
+
   private val numPartitions = partitioner.map(_.numPartitions).getOrElse(1)
   private val shouldPartition = numPartitions > 1
 
@@ -123,7 +126,7 @@ private[spark] class ExternalSorter[K, V, C](
   // grow internal data structures by growing + copying every time the number of objects doubles.
   private val serializerBatchSize = conf.getLong("spark.shuffle.spill.batchSize", 10000)
 
-  private def getPartition(key: K): Int = {
+  private def getPartition(key: K): PartitionId = {
     if (shouldPartition) partitioner.get.getPartition(key) else 0
   }
 
@@ -386,8 +389,9 @@ private[spark] class ExternalSorter[K, V, C](
    * in order (you can't "skip ahead" to one partition without reading the previous one).
    * Guaranteed to return a key-value pair for each partition, in order of partition ID.
    */
-  private def merge(spills: Seq[SpilledFile], inMemory: Iterator[((Int, K), C)])
-      : Iterator[(Int, Iterator[Product2[K, C]])] = {
+  private def merge(
+      spills: Seq[SpilledFile],
+      inMemory: Iterator[((PartitionId, K), C)]): PartitionedIterator = {
     val readers = spills.map(new SpillReader(_))
     val inMemBuffered = inMemory.buffered
     (0 until numPartitions).iterator.map { p =>
@@ -676,7 +680,7 @@ private[spark] class ExternalSorter[K, V, C](
    * For now, we just merge all the spilled files in once pass, but this can be modified to
    * support hierarchical merging.
    */
-   def partitionedIterator: Iterator[(Int, Iterator[Product2[K, C]])] = {
+   def partitionedIterator: PartitionedIterator = {
     val usingMap = aggregator.isDefined
     val collection: WritablePartitionedPairCollection[K, C] = if (usingMap) map else buffer
     if (spills.isEmpty && partitionWriters == null) {
@@ -819,9 +823,7 @@ private[spark] class ExternalSorter[K, V, C](
    *
    * @param data an iterator of elements, assumed to already be sorted by partition ID
    */
-  private def groupByPartition(data: Iterator[((Int, K), C)])
-      : Iterator[(Int, Iterator[Product2[K, C]])] =
-  {
+  private def groupByPartition(data: Iterator[((PartitionId, K), C)]): PartitionedIterator = {
     val buffered = data.buffered
     (0 until numPartitions).iterator.map(p => (p, new IteratorForPartition(p, buffered)))
   }
@@ -839,9 +841,11 @@ private[spark] class ExternalSorter[K, V, C](
    * stream, assuming this partition is the next one to be read. Used to make it easier to return
    * partitioned iterators from our in-memory collection.
    */
-  private[this] class IteratorForPartition(partitionId: Int, data: BufferedIterator[((Int, K), C)])
-    extends Iterator[Product2[K, C]]
-  {
+  private[this] class IteratorForPartition(
+      partitionId: PartitionId,
+      data: BufferedIterator[((PartitionId, K), C)])
+    extends Iterator[Product2[K, C]] {
+
     override def hasNext: Boolean = data.hasNext && data.head._1._1 == partitionId
 
     override def next(): Product2[K, C] = {
