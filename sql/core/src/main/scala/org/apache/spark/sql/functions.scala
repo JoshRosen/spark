@@ -1579,8 +1579,9 @@ object functions {
    */
   def md5(columnName: String): Column = md5(Column(columnName))
 
-   /**
-   * Calculates the hash value of the column.
+  /**
+   * Calculates the hash value of the column and returns it as an integer.
+   * The value returned from this function is not guaranteed to be stable across Spark versions.
    *
    * @group misc_funcs
    * @since 1.5.0
@@ -1588,7 +1589,8 @@ object functions {
   def hash(e: Column): Column = Hash(e.expr)
 
   /**
-   * Calculates the hash value of the column.
+   * Calculates the hash value of the column and returns it as an integer.
+   * The value returned from this function is not guaranteed to be stable across Spark versions.
    *
    * @group misc_funcs
    * @since 1.5.0

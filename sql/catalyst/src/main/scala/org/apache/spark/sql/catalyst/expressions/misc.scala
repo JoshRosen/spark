@@ -48,7 +48,8 @@ case class Md5(child: Expression) extends UnaryExpression with ExpectsInputTypes
 }
 
 /**
- * A function that returns a hash value of the argument
+ * A function that calculates the hash value of the argument and returns it as an integer.
+ * The value returned from this function is not guaranteed to be stable across Spark versions.
  */
 case class Hash(children: Expression*) extends Expression {
 
