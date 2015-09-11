@@ -121,7 +121,9 @@ object TungstenCache {
 
         def hasNext: Boolean = bufferedRowIterator.hasNext
       }
-    }.setName(compressionType + "_" + child.nodeName).persist(StorageLevel.MEMORY_ONLY)
+    }
+    .setName(compressionType.getOrElse("") + "_" + child.nodeName)
+    .persist(StorageLevel.MEMORY_ONLY)
     // TODO(josh): is this the right name?
 
     cachedRDD.mapPartitions { blockIterator =>
