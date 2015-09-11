@@ -106,43 +106,51 @@ object TungstenCacheBenchmarks {
       cachedDataSizeBytes = cachedDataSizeBytes, scanTimeMilliseconds = durationMillis)
   }
 
-  private def runBenchmark(
-      numRows: Long,
-      numPartitions: Int,
-      numRepetitions: Int,
+  private def generateRandomDataFrame(
+      sqlContext: SQLContext,
       schema: StructType,
+      numRows: Long,
+      numPartitions: Int): DataFrame = {
+    val rows: RDD[Row] = sqlContext.sparkContext
+      .parallelize(1L to numRows, numPartitions)
+      .mapPartitions { iter =>
+      val dataGenerator =
+        RandomDataGenerator.forType(schema, nullable = false).get.asInstanceOf[() => Row]
+      iter.map(_ => dataGenerator())
+    }
+    sqlContext.createDataFrame(rows, schema)
+  }
+
+  private def runBenchmark(
+      numRepetitions: Int,
+      testDataGenerator: SQLContext => DataFrame,
       cols: Seq[String] = Seq.empty // empty seq is treated as full scan
   ): Unit = {
-    println()
-    println("=" * 80)
-    println(s"Benchmark configuration:")
-    println(s"Number of rows: $numRows")
-    println(s"Number of partitions: $numPartitions")
-    println(s"Columns to scan: " +
-      (if (cols.isEmpty) schema.fieldNames.toSeq else cols).mkString(", "))
-    println("Schema:")
-    schema.printTreeString()
-    println("=" * 80)
-    println()
-
     val tempDir = Utils.createTempDir()
-    val dataPath = new File(tempDir, "dataFile").getAbsolutePath
+    val dataPath = new File(tempDir, "inputData").getAbsolutePath
 
-    // Save the input data into Parquet. We'll re-use this data across benchmarking runs.
     withFreshContext { sqlContext =>
-      val rows: RDD[Row] = sqlContext.sparkContext
-        .parallelize(1L to numRows, numPartitions)
-        .mapPartitions { iter =>
-        val dataGenerator =
-          RandomDataGenerator.forType(schema, nullable = false).get.asInstanceOf[() => Row]
-        iter.map(_ => dataGenerator())
-      }
-      val df = sqlContext.createDataFrame(rows, schema)
-      df.write.parquet(dataPath)
+      // Save the input data into Parquet. We'll re-use this data across benchmarking runs.
+      val inputData = testDataGenerator(sqlContext)
+      inputData.write.parquet(dataPath)
+      val numRows = inputData.count()
+      val numPartitions = inputData.rdd.partitions.length
+      val schema = inputData.schema
+
+      println()
+      println("=" * 80)
+      println(s"Benchmark configuration:")
+      println(s"Number of rows: $numRows")
+      println(s"Number of partitions: $numPartitions")
+      println(s"Columns to scan: " +
+        (if (cols.isEmpty) schema.fieldNames.toSeq else cols).mkString(", "))
+      println("Schema:")
+      schema.printTreeString()
+      println("=" * 80)
+      println()
     }
 
     // First, run the benchmark with the existing columnar cache
-
     def testColumnarCache(compress: Boolean): Unit = {
       for (repetition <- 1 to numRepetitions) {
         System.gc()
@@ -201,10 +209,8 @@ object TungstenCacheBenchmarks {
   def main(args: Array[String]): Unit = {
     val schema = new StructType((1 to 10).map(i => StructField(s"_$i", LongType)).toArray)
     runBenchmark(
-      numRows = 1000 * 1000,
-      numPartitions = 10,
       numRepetitions = 5,
-      schema,
+      generateRandomDataFrame(_: SQLContext, schema, numRows = 1000 * 1000, numPartitions = 10),
       cols = Seq("_1", "_2", "_3"))
   }
 }
