@@ -74,27 +74,6 @@ object TungstenCacheBenchmarks {
       scanTimeMilliseconds = durationMillis)
   }
 
-  private def runBenchmark(
-      inputData: DataFrame,
-      compressionType: String,
-      blockSize: Int): BenchmarkResult = {
-    val ctx = inputData.sqlContext
-    import ctx.implicits._
-    val cachedData = inputData.tungstenCache(compressionType, blockSize)
-    // Caching is lazy, so force execution in order to trigger caching:
-    cachedData.rdd.count()
-    // Figure out the size of the cached data:
-    val cachedDataSizeBytes = getCachedSizeInBytes(cachedData.sqlContext.sparkContext)
-    // Time a full table scan:
-    val startTime = System.currentTimeMillis()
-    cachedData.rdd.map(identity).count()
-    val endTime = System.currentTimeMillis()
-    val durationMillis = endTime - startTime
-    BenchmarkResult(
-      cachedDataSizeBytes = cachedDataSizeBytes,
-      scanTimeMilliseconds = durationMillis)
-  }
-
   private def withFreshContext[T](fn: SQLContext => T): T = {
     val conf = new SparkConf().set("spark.ui.port", "0").set("spark.app.id", "dummyId")
     val sc = new SparkContext("local[4]", "TungstenCacheBenchmarks", conf)
