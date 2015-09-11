@@ -24,7 +24,7 @@ import com.google.common.io.ByteStreams
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.unsafe.array.ByteArrayMethods
-import org.apache.spark.unsafe.memory.MemoryBlock
+import org.apache.spark.unsafe.memory.{TaskMemoryManager, MemoryBlock}
 import org.apache.spark.{TaskContext, SparkEnv}
 import org.apache.spark.annotation.Experimental
 import org.apache.spark.io.CompressionCodec
@@ -78,44 +78,8 @@ object TungstenCache {
             currOffset += recordSize // Increment currOffset regardless to break loop when full
           }
 
-          // Optionally compress block before writing
           compressionCodec match {
-            case Some(codec) =>
-              // Compress the block using an on-heap byte array
-              val compressedBlockArray: Array[Byte] = {
-                val blockArray = new Array[Byte](blockSize)
-                Platform.copyMemory(
-                  block.getBaseObject,
-                  block.getBaseOffset,
-                  blockArray,
-                  Platform.BYTE_ARRAY_OFFSET,
-                  blockSize)
-                val baos = new ByteArrayOutputStream(blockSize)
-                val compressedBaos = codec.compressedOutputStream(baos)
-                compressedBaos.write(blockArray)
-                compressedBaos.flush()
-                compressedBaos.close()
-                baos.toByteArray
-              }
-
-              // Allocate a new block with compressed byte array padded to word boundary
-              val totalRecordSize = compressedBlockArray.length + 4
-              val nearestWordBoundary =
-                ByteArrayMethods.roundNumberOfBytesToNearestWord(totalRecordSize)
-              val padding = nearestWordBoundary - totalRecordSize
-              val compressedBlock = taskMemoryManager.allocateUnchecked(totalRecordSize + padding)
-              Platform.putInt(
-                compressedBlock.getBaseObject,
-                compressedBlock.getBaseOffset,
-                padding)
-              Platform.copyMemory(
-                compressedBlockArray,
-                Platform.BYTE_ARRAY_OFFSET,
-                compressedBlock.getBaseObject,
-                compressedBlock.getBaseOffset + 4,
-                compressedBlockArray.length)
-              taskMemoryManager.freeUnchecked(block)
-              compressedBlock
+            case Some(codec) => compressBlock(block, codec, TaskContext.get().taskMemoryManager())
             case None => block
           }
         }
@@ -128,29 +92,11 @@ object TungstenCache {
     // TODO(josh): is this the right name?
 
     cachedRDD.mapPartitions { blockIterator =>
+      val compressionCodec: Option[CompressionCodec] =
+        compressionType.map { t => CompressionCodec.createCodec(SparkEnv.get.conf, t) }
       blockIterator.flatMap { rawBlock =>
-        // Optionally decompress block
-        val compressionCodec: Option[CompressionCodec] =
-          compressionType.map { t => CompressionCodec.createCodec(SparkEnv.get.conf, t) }
         val block: MemoryBlock = compressionCodec match {
-          case Some(codec) =>
-            // Copy compressed block (excluding padding) to on-heap byte array
-            val padding = Platform.getInt(rawBlock.getBaseObject, rawBlock.getBaseOffset)
-            val compressedBlockArray = new Array[Byte](blockSize)
-            Platform.copyMemory(
-              rawBlock.getBaseObject,
-              rawBlock.getBaseOffset + 4,
-              compressedBlockArray,
-              Platform.BYTE_ARRAY_OFFSET,
-              rawBlock.size() - padding)
-
-            // Decompress into MemoryBlock backed by on-heap byte array
-            val decompressionStream =
-              codec.compressedInputStream(new ByteArrayInputStream(compressedBlockArray))
-            val decompressedBlock = new Array[Byte](blockSize)
-            ByteStreams.readFully(decompressionStream, decompressedBlock)
-            decompressionStream.close()
-            MemoryBlock.fromByteArray(decompressedBlock)
+          case Some(codec) => decompressBlock(rawBlock, blockSize, codec)
           case None => rawBlock
         }
 
@@ -179,5 +125,70 @@ object TungstenCache {
         }
       }
     }
+  }
+
+  private def compressBlock(
+      memoryBlock: MemoryBlock,
+      compressionCodec: CompressionCodec,
+      taskMemoryManager: TaskMemoryManager): MemoryBlock = {
+    // Compress the block using an on-heap byte array
+    val compressedBlockArray: Array[Byte] = {
+      val blockArray = new Array[Byte](memoryBlock.size().toInt)
+      Platform.copyMemory(
+        memoryBlock.getBaseObject,
+        memoryBlock.getBaseOffset,
+        blockArray,
+        Platform.BYTE_ARRAY_OFFSET,
+        memoryBlock.size())
+      val baos = new ByteArrayOutputStream(memoryBlock.size().toInt)
+      val compressedBaos = compressionCodec.compressedOutputStream(baos)
+      compressedBaos.write(blockArray)
+      compressedBaos.flush()
+      compressedBaos.close()
+      baos.toByteArray
+    }
+
+    // Allocate a new block with compressed byte array padded to word boundary
+    val totalRecordSize = compressedBlockArray.length + 4
+    val nearestWordBoundary =
+      ByteArrayMethods.roundNumberOfBytesToNearestWord(totalRecordSize)
+    val padding = nearestWordBoundary - totalRecordSize
+    val compressedBlock = taskMemoryManager.allocateUnchecked(totalRecordSize + padding)
+    Platform.putInt(
+      compressedBlock.getBaseObject,
+      compressedBlock.getBaseOffset,
+      padding)
+    Platform.copyMemory(
+      compressedBlockArray,
+      Platform.BYTE_ARRAY_OFFSET,
+      compressedBlock.getBaseObject,
+      compressedBlock.getBaseOffset + 4,
+      compressedBlockArray.length)
+    taskMemoryManager.freeUnchecked(memoryBlock)
+    compressedBlock
+  }
+
+  private def decompressBlock(
+      compressedMemoryBlock: MemoryBlock,
+      decompressedSize: Int,
+      compressionCodec: CompressionCodec): MemoryBlock = {
+    // Copy compressed block (excluding padding) to on-heap byte array
+    val padding =
+      Platform.getInt(compressedMemoryBlock.getBaseObject, compressedMemoryBlock.getBaseOffset)
+    val compressedBlockArray = new Array[Byte](compressedMemoryBlock.size().toInt - padding)
+    Platform.copyMemory(
+      compressedMemoryBlock.getBaseObject,
+      compressedMemoryBlock.getBaseOffset + 4,
+      compressedBlockArray,
+      Platform.BYTE_ARRAY_OFFSET,
+      compressedMemoryBlock.size() - padding)
+
+    // Decompress into MemoryBlock backed by on-heap byte array
+    val decompressionStream =
+      compressionCodec.compressedInputStream(new ByteArrayInputStream(compressedBlockArray))
+    val decompressedBlock = new Array[Byte](decompressedSize)
+    ByteStreams.readFully(decompressionStream, decompressedBlock)
+    decompressionStream.close()
+    MemoryBlock.fromByteArray(decompressedBlock)
   }
 }
