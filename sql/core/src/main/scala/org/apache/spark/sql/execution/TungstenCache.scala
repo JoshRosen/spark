@@ -19,8 +19,6 @@ package org.apache.spark.sql.execution
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 
-import scala.collection.mutable.ArrayBuffer
-
 import com.google.common.io.ByteStreams
 
 import org.apache.spark.storage.StorageLevel
@@ -131,7 +129,7 @@ object TungstenCache {
         // Optionally decompress block
         val compressionCodec: Option[CompressionCodec] =
           compressionType.map { t => CompressionCodec.createCodec(SparkEnv.get.conf, t) }
-        val block = compressionCodec match {
+        val block: MemoryBlock = compressionCodec match {
           case Some(codec) =>
             // Copy compressed block (excluding padding) to on-heap byte array
             val padding = Platform.getInt(rawBlock.getBaseObject, rawBlock.getBaseOffset)
@@ -153,24 +151,29 @@ object TungstenCache {
           case None => rawBlock
         }
 
-        val rows = new ArrayBuffer[UnsafeRow]()
-        var currOffset = 0
-        var moreData = true
-        while (currOffset < block.size() && moreData) {
-          val rowSize = Platform.getInt(block.getBaseObject, block.getBaseOffset + currOffset)
-          currOffset += 4
-          // TODO: should probably have a null terminator rather than relying on zeroed out
-          if (rowSize > 0) {
-            val unsafeRow = new UnsafeRow()
+        new Iterator[UnsafeRow] {
+          private[this] val unsafeRow = new UnsafeRow()
+          private[this] var currOffset: Long = 0
+          private[this] var _nextRowSize = getNextRowSize()
+          private[this] def getNextRowSize(): Int = {
+            if (currOffset >= block.size()) {
+              -1
+            } else {
+              Platform.getInt(block.getBaseObject, block.getBaseOffset + currOffset)
+            }
+          }
+          override def hasNext: Boolean = _nextRowSize > 0
+          override def next(): UnsafeRow = {
+            // TODO: should probably have a null terminator rather than relying on zeroed out
+            assert(_nextRowSize > 0)
+            currOffset += 4
             unsafeRow.pointTo(
-              block.getBaseObject, block.getBaseOffset + currOffset, numFields, rowSize)
-            rows.append(unsafeRow)
-            currOffset += rowSize
-          } else {
-            moreData = false
+              block.getBaseObject, block.getBaseOffset + currOffset, numFields, _nextRowSize)
+            currOffset += _nextRowSize
+            _nextRowSize = getNextRowSize()
+            unsafeRow
           }
         }
-        rows
       }
     }
   }
