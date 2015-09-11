@@ -67,7 +67,6 @@ object TungstenCache {
           val block = taskMemoryManager.allocateUnchecked(blockSize)
 
           var currOffset = 0
-          val seenRows = ArrayBuffer[UnsafeRow]()
           while (bufferedRowIterator.hasNext && currOffset < blockSize) {
             val currRow = bufferedRowIterator.head
             val recordSize = 4 + currRow.getSizeInBytes
@@ -75,7 +74,6 @@ object TungstenCache {
               Platform.putInt(
                 block.getBaseObject, block.getBaseOffset + currOffset, currRow.getSizeInBytes)
               currRow.writeToMemory(block.getBaseObject, block.getBaseOffset + currOffset + 4)
-              seenRows += currRow
               bufferedRowIterator.next()
             }
             currOffset += recordSize // Increment currOffset regardless to break loop when full
