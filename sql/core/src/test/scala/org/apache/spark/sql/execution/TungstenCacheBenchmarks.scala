@@ -27,7 +27,7 @@ import org.json4s.jackson.JsonMethods
 
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.types.{LongType, StructField, StructType}
+import org.apache.spark.sql.types.{StructType, LongType, StructField}
 import org.apache.spark.sql.{SQLConf, Row, RandomDataGenerator, SQLContext, DataFrame}
 import org.apache.spark.util.Utils
 
@@ -207,10 +207,30 @@ object TungstenCacheBenchmarks {
   }
 
   def main(args: Array[String]): Unit = {
-    val schema = new StructType((1 to 10).map(i => StructField(s"_$i", LongType)).toArray)
     runBenchmark(
       numRepetitions = 5,
-      generateRandomDataFrame(_: SQLContext, schema, numRows = 1000 * 1000, numPartitions = 10),
-      cols = Seq("_1", "_2", "_3"))
+      generateRandomDataFrame(_: SQLContext,
+        new StructType((1 to 10).map(i => StructField(s"_$i", LongType)).toArray),
+        numRows = 1000 * 1000,
+        numPartitions = 10),
+      cols = Seq("_1"))
+
+    runBenchmark(
+      numRepetitions = 5,
+      generateRandomDataFrame(_: SQLContext,
+        new StructType((1 to 10).map(i => StructField(s"_$i", LongType)).toArray),
+        numRows = 1000 * 1000,
+        numPartitions = 10),
+      cols = Seq.empty)
+
+    // Nested data
+    runBenchmark(
+      numRepetitions = 5,
+      generateRandomDataFrame(_: SQLContext,
+        StructType(
+          StructField("a", StructType(StructField("f", LongType) :: Nil)) :: Nil),
+        numRows = 1000 * 1000,
+        numPartitions = 10),
+      cols = Seq.empty)
   }
 }
