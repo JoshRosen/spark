@@ -43,6 +43,7 @@ object TungstenCache {
       child: SparkPlan,
       compressionType: Option[String] = None,
       blockSize: Int = 4 * 1000 * 1000): RDD[InternalRow] = {
+    val END_OF_BLOCK: Int = -1
     val numFields = child.schema.length
     val childRDD: RDD[UnsafeRow] = {
       if (child.outputsUnsafeRows) {
@@ -58,25 +59,26 @@ object TungstenCache {
       val compressionCodec: Option[CompressionCodec] =
         compressionType.map { t => CompressionCodec.createCodec(SparkEnv.get.conf, t) }
       new Iterator[MemoryBlock] {
-        // NOTE: This assumes that size of every row < blockSize
+        // NOTE: This assumes that size of every row < blockSize - 4
+        // TODO(josh): we'll have to figure out how to support large rows.
         def next(): MemoryBlock = {
           // Packs rows into a `blockSize` bytes contiguous block of memory, starting a new block
           // whenever the current fills up.
-          // Each row is laid out in memory as [rowSize (int)|rowData (rowSize bytes)]
+          // Each row is laid out in memory as [rowSize (int)|rowData (rowSize bytes)].
+          // The end of the block is marked by a special rowSize, END_OF_BLOCK (-1).
           val block = taskMemoryManager.allocateUnchecked(blockSize)
 
           var currOffset = 0
-          while (bufferedRowIterator.hasNext && currOffset < blockSize) {
+          while (bufferedRowIterator.hasNext &&
+            currOffset + 4 + bufferedRowIterator.head.getSizeInBytes < blockSize - 4) {
             val currRow = bufferedRowIterator.head
-            val recordSize = 4 + currRow.getSizeInBytes
-            if (currOffset + recordSize < blockSize) {
-              Platform.putInt(
-                block.getBaseObject, block.getBaseOffset + currOffset, currRow.getSizeInBytes)
-              currRow.writeToMemory(block.getBaseObject, block.getBaseOffset + currOffset + 4)
-              bufferedRowIterator.next()
-            }
-            currOffset += recordSize // Increment currOffset regardless to break loop when full
+            Platform.putInt(
+              block.getBaseObject, block.getBaseOffset + currOffset, currRow.getSizeInBytes)
+            currRow.writeToMemory(block.getBaseObject, block.getBaseOffset + currOffset + 4)
+            bufferedRowIterator.next()
+            currOffset += 4 + currRow.getSizeInBytes
           }
+          Platform.putInt(block.getBaseObject, block.getBaseOffset + currOffset, END_OF_BLOCK)
 
           compressionCodec match {
             case Some(codec) => compressBlock(block, codec, TaskContext.get().taskMemoryManager())
