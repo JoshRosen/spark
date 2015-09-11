@@ -345,7 +345,7 @@ class CachedTableSuite extends QueryTest with SharedSQLContext {
     val compressionHint = if (compressionCodec.isEmpty) "uncompressed" else compressionCodec
     test(s"cache and read table with Tungsten cache ($compressionHint)") {
       // Use a 0.4 KB block size to force multiple blocks
-      val (_, tungstenCachedDF) = testData.tungstenCache(compressionCodec, blockSize = 400)
+      val tungstenCachedDF = testData.tungstenCache(compressionCodec, blockSize = 400)
       checkAnswer(tungstenCachedDF, testData)
       // Run the job again so that we run on the cached data:
       checkAnswer(tungstenCachedDF, testData)
