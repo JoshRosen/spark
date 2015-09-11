@@ -106,7 +106,7 @@ private[spark] object CompressionCodec {
 class LZ4CompressionCodec(conf: SparkConf) extends CompressionCodec {
 
   override def compressedOutputStream(s: OutputStream): OutputStream = {
-    val blockSize = conf.getSizeAsBytes("spark.io.compression.lz4.blockSize", "104").toInt
+    val blockSize = conf.getSizeAsBytes("spark.io.compression.lz4.blockSize", "32k").toInt
     new LZ4BlockOutputStream(s, blockSize)
   }
 
