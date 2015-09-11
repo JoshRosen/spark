@@ -52,6 +52,7 @@ object TungstenCache {
       }
     }
     val cachedRDD: RDD[MemoryBlock] = childRDD.mapPartitions { rowIterator =>
+      // Note: this buffering is used to let us hold onto rows when rolling across block boundaries.
       val bufferedRowIterator = rowIterator.buffered
       val taskMemoryManager = TaskContext.get().taskMemoryManager()
       val compressionCodec: Option[CompressionCodec] =
@@ -60,8 +61,8 @@ object TungstenCache {
         // NOTE: This assumes that size of every row < blockSize
         def next(): MemoryBlock = {
           // Packs rows into a `blockSize` bytes contiguous block of memory, starting a new block
-          // whenever the current fills up
-          // Each row is laid out in memory as [rowSize (4)|row (rowSize)]
+          // whenever the current fills up.
+          // Each row is laid out in memory as [rowSize (int)|rowData (rowSize bytes)]
           val block = taskMemoryManager.allocateUnchecked(blockSize)
 
           var currOffset = 0
