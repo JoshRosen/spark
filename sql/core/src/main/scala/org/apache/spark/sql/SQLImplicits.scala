@@ -17,11 +17,13 @@
 
 package org.apache.spark.sql
 
-import java.io.{DataInputStream, ByteArrayInputStream, ByteArrayOutputStream}
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 
 import scala.collection.mutable.ArrayBuffer
 import scala.language.implicitConversions
 import scala.reflect.runtime.universe.TypeTag
+
+import com.google.common.io.ByteStreams
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.annotation.Experimental
@@ -137,7 +139,8 @@ private[sql] abstract class SQLImplicits {
      * @param blockSize size of each MemoryBlock (default = 4 MB)
      */
     def tungstenCache(
-        compressionType: String = "", blockSize: Int = 4000000): (RDD[_], DataFrame) = {
+        compressionType: String = "",
+        blockSize: Int = 4000000): (RDD[_], DataFrame) = {
       val schema = df.schema
 
       val convert = CatalystTypeConverters.createToCatalystConverter(schema)
@@ -249,25 +252,12 @@ private[sql] abstract class SQLImplicits {
                   rawBlock.size() - padding)
 
                 // Decompress into MemoryBlock backed by on-heap byte array
-                val compressedBais = new ByteArrayInputStream(compressedBlockArray)
-                val uncompressedBlockArray = new Array[Byte](_blockSize)
-                val cdis = new DataInputStream(codec.compressedInputStream(compressedBais))
-                // compression codec has its own block size and cis.read only reads one compression
-                // codec block, so we need to keep reading until cis is exhausted
-                // TODO: Use DataInputStream.readFully()
-                cdis.readFully(uncompressedBlockArray)
-//                var cumNumRead = 0
-//                var numRead = cis.read(uncompressedBlockArray)
-//                while (numRead > 0) {
-//                  cumNumRead += numRead
-//                  numRead = cis.read(
-//                    uncompressedBlockArray,
-//                    cumNumRead,
-//                    uncompressedBlockArray.length - cumNumRead)
-//                }
-//                cis.close()
-                cdis.close()
-                MemoryBlock.fromByteArray(uncompressedBlockArray)
+                val decompressionStream =
+                  codec.compressedInputStream(new ByteArrayInputStream(compressedBlockArray))
+                val decompressedBlock = new Array[Byte](_blockSize)
+                ByteStreams.readFully(decompressionStream, decompressedBlock)
+                decompressionStream.close()
+                MemoryBlock.fromByteArray(decompressedBlock)
               case None => rawBlock
             }
 
