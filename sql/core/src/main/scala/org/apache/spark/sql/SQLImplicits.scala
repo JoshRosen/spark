@@ -199,7 +199,7 @@ private[sql] abstract class SQLImplicits {
                 }
 
                 // Allocate a new block with compressed byte array padded to word boundary
-                val totalRecordSize = compressedBlockArray.size + 4
+                val totalRecordSize = compressedBlockArray.length + 4
                 val nearestWordBoundary =
                   ByteArrayMethods.roundNumberOfBytesToNearestWord(totalRecordSize)
                 val padding = nearestWordBoundary - totalRecordSize
@@ -213,7 +213,7 @@ private[sql] abstract class SQLImplicits {
                   Platform.BYTE_ARRAY_OFFSET,
                   compressedBlock.getBaseObject,
                   compressedBlock.getBaseOffset + 4,
-                  compressedBlockArray.size)
+                  compressedBlockArray.length)
                 taskMemoryManager.freeUnchecked(block)
                 compressedBlock
               case None => block
