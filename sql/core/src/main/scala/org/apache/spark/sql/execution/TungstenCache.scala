@@ -113,9 +113,8 @@ object TungstenCache {
               Platform.getInt(block.getBaseObject, block.getBaseOffset + currOffset)
             }
           }
-          override def hasNext: Boolean = _nextRowSize > 0
+          override def hasNext: Boolean = _nextRowSize != END_OF_BLOCK
           override def next(): UnsafeRow = {
-            // TODO: should probably have a null terminator rather than relying on zeroed out
             assert(_nextRowSize > 0)
             currOffset += 4
             unsafeRow.pointTo(
