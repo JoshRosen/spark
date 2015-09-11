@@ -341,29 +341,15 @@ class CachedTableSuite extends QueryTest with SharedSQLContext {
     }
   }
 
-  test("tungsten cache uncompressed table and read") {
-    val data = testData
-    // Use a 0.4 KB block size to force multiple blocks
-    val (_, tungstenCachedDF) = data.tungstenCache("", 400)
-    checkAnswer(tungstenCachedDF, testData)
-  }
-
-  test("tungsten cache lz4 compressed table and read") {
-    val data = testData
-    val (_, tungstenCachedDF) = data.tungstenCache("lz4", 400)
-    checkAnswer(tungstenCachedDF, testData)
-  }
-
-  test("tungsten cache lzf compressed table and read") {
-    val data = testData
-    val (_, tungstenCachedDF) = data.tungstenCache("lzf", 400)
-    checkAnswer(tungstenCachedDF, testData)
-  }
-
-  test("tungsten cache snappy compressed table and read") {
-    val data = testData
-    val (_, tungstenCachedDF) = data.tungstenCache("snappy", 400)
-    checkAnswer(tungstenCachedDF, testData)
+  for (compressionCodec <- Seq("", "lz4", "lzf", "snappy")) {
+    val compressionHint = if (compressionCodec.isEmpty) "uncompressed" else compressionCodec
+    test(s"cache and read table with Tungsten cache ($compressionHint)") {
+      // Use a 0.4 KB block size to force multiple blocks
+      val (_, tungstenCachedDF) = testData.tungstenCache(compressionCodec, blockSize = 400)
+      checkAnswer(tungstenCachedDF, testData)
+      // Run the job again so that we run on the cached data:
+      checkAnswer(tungstenCachedDF, testData)
+    }
   }
 
   test("SPARK-10327 Cache Table is not working while subquery has alias in its project list") {
