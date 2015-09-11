@@ -182,19 +182,21 @@ private[sql] abstract class SQLImplicits {
             compressionCodec match {
               case Some(codec) =>
                 // Compress the block using an on-heap byte array
-                val blockArray = new Array[Byte](blockSize)
-                Platform.copyMemory(
-                  block.getBaseObject,
-                  block.getBaseOffset,
-                  blockArray,
-                  Platform.BYTE_ARRAY_OFFSET,
-                  blockSize)
-                val baos = new ByteArrayOutputStream(blockSize)
-                val compressedBaos = codec.compressedOutputStream(baos)
-                compressedBaos.write(blockArray)
-                compressedBaos.flush()
-                compressedBaos.close()
-                val compressedBlockArray = baos.toByteArray
+                val compressedBlockArray: Array[Byte] = {
+                  val blockArray = new Array[Byte](blockSize)
+                  Platform.copyMemory(
+                    block.getBaseObject,
+                    block.getBaseOffset,
+                    blockArray,
+                    Platform.BYTE_ARRAY_OFFSET,
+                    blockSize)
+                  val baos = new ByteArrayOutputStream(blockSize)
+                  val compressedBaos = codec.compressedOutputStream(baos)
+                  compressedBaos.write(blockArray)
+                  compressedBaos.flush()
+                  compressedBaos.close()
+                  baos.toByteArray
+                }
 
                 // Allocate a new block with compressed byte array padded to word boundary
                 val totalRecordSize = compressedBlockArray.size + 4
