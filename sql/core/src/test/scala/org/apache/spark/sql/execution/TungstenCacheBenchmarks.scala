@@ -27,8 +27,8 @@ import org.json4s.jackson.JsonMethods
 
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.types.{LongType, IntegerType, StructField, StructType}
-import org.apache.spark.sql.{Row, RandomDataGenerator, SQLContext, DataFrame}
+import org.apache.spark.sql.types.{LongType, StructField, StructType}
+import org.apache.spark.sql.{SQLConf, Row, RandomDataGenerator, SQLContext, DataFrame}
 import org.apache.spark.util.Utils
 
 /**
@@ -39,6 +39,29 @@ object TungstenCacheBenchmarks {
   private implicit val format = DefaultFormats
 
   case class BenchmarkResult(cachedDataSizeBytes: Long, scanTimeMilliseconds: Long)
+
+  /**
+   * Executes the given function with a fresh SparkContext and SQLContext.
+   */
+  private def withFreshContext[T](fn: SQLContext => T): T = {
+    val conf = new SparkConf().set("spark.ui.port", "0").set("spark.app.id", "dummyId")
+    val sc = new SparkContext("local[4]", "TungstenCacheBenchmarks", conf)
+    try {
+      fn(new SQLContext(sc))
+    } finally {
+      sc.stop()
+    }
+  }
+
+  /**
+   * Executes the given block and reports the time taken (in milliseconds).
+   */
+  private def timeInMillis[T](block: => T): Long = {
+    val startTime = System.currentTimeMillis()
+    block
+    val endTime = System.currentTimeMillis()
+    endTime - startTime
+  }
 
   /**
    * Uses the Spark UI's REST API to retrive the size, in bytes, of the cached RDD.
@@ -57,71 +80,96 @@ object TungstenCacheBenchmarks {
     (parsed.head \ "memoryUsed").extract[Long]
   }
 
-  /**
-   * Given a cached DataFrame, run a benchmark of scan performance.
-   */
-  private def runScanBenchmark(cachedDataFrame: DataFrame): BenchmarkResult = {
+  private def benchmarkFullScan(cachedDataFrame: DataFrame): BenchmarkResult = {
+    // Force the data to be cached (necessary because caching is lazy):
     cachedDataFrame.rdd.count()
     // Figure out the size of the cached data:
     val cachedDataSizeBytes = getCachedSizeInBytes(cachedDataFrame.sqlContext.sparkContext)
-    // Time a full table scan:
-    val startTime = System.currentTimeMillis()
-    cachedDataFrame.rdd.map(identity).count()
-    val endTime = System.currentTimeMillis()
-    val durationMillis = endTime - startTime
-    BenchmarkResult(
-      cachedDataSizeBytes = cachedDataSizeBytes,
-      scanTimeMilliseconds = durationMillis)
-  }
-
-  private def withFreshContext[T](fn: SQLContext => T): T = {
-    val conf = new SparkConf().set("spark.ui.port", "0").set("spark.app.id", "dummyId")
-    val sc = new SparkContext("local[4]", "TungstenCacheBenchmarks", conf)
-    try {
-      fn(new SQLContext(sc))
-    } finally {
-      sc.stop()
+    val durationMillis = timeInMillis {
+      cachedDataFrame.queryExecution.sparkPlan.execute().count()
     }
+    BenchmarkResult(
+      cachedDataSizeBytes = cachedDataSizeBytes, scanTimeMilliseconds = durationMillis)
   }
 
-  def main(args: Array[String]): Unit = {
-    val NUM_ROWS = 10000 * 1000
-    val NUM_PARTITIONS = 10
-    val NUM_REPETITIONS = 5
+  private def benchmarkPrunedScan(
+      cachedDataFrame: DataFrame,
+      cols: Seq[String]): BenchmarkResult = {
+    // Force the data to be cached (necessary because caching is lazy):
+    cachedDataFrame.rdd.count()
+    // Figure out the size of the cached data:
+    val cachedDataSizeBytes = getCachedSizeInBytes(cachedDataFrame.sqlContext.sparkContext)
+    val durationMillis = timeInMillis {
+      cachedDataFrame.select(cols.head, cols.tail: _*).queryExecution.sparkPlan.execute().count()
+    }
+    BenchmarkResult(
+      cachedDataSizeBytes = cachedDataSizeBytes, scanTimeMilliseconds = durationMillis)
+  }
+
+  private def runBenchmark(
+      numRows: Long,
+      numPartitions: Int,
+      numRepetitions: Int,
+      schema: StructType,
+      cols: Seq[String] = Seq.empty // empty seq is treated as full scan
+  ): Unit = {
+    println()
+    println("=" * 80)
+    println(s"Benchmark configuration:")
+    println(s"Number of rows: $numRows")
+    println(s"Number of partitions: $numPartitions")
+    println(s"Columns to scan: " +
+      (if (cols.isEmpty) schema.fieldNames.toSeq else cols).mkString(", "))
+    println("Schema:")
+    schema.printTreeString()
+    println("=" * 80)
+    println()
 
     val tempDir = Utils.createTempDir()
     val dataPath = new File(tempDir, "dataFile").getAbsolutePath
 
     // Save the input data into Parquet. We'll re-use this data across benchmarking runs.
     withFreshContext { sqlContext =>
-      val schema = new StructType(Array(
-        StructField("name", LongType),
-        StructField("age", IntegerType)
-      ))
       val rows: RDD[Row] = sqlContext.sparkContext
-        .parallelize(1 to NUM_ROWS, NUM_PARTITIONS)
+        .parallelize(1L to numRows, numPartitions)
         .mapPartitions { iter =>
-          val dataGenerator =
-            RandomDataGenerator.forType(schema, nullable = false).get.asInstanceOf[() => Row]
-          iter.map(_ => dataGenerator())
-        }
+        val dataGenerator =
+          RandomDataGenerator.forType(schema, nullable = false).get.asInstanceOf[() => Row]
+        iter.map(_ => dataGenerator())
+      }
       val df = sqlContext.createDataFrame(rows, schema)
       df.write.parquet(dataPath)
     }
 
     // First, run the benchmark with the existing columnar cache
-    println("-" * 80)
-    println("Columnar cache")
-    println("-" * 80)
-    for (repetition <- 1 to NUM_REPETITIONS) {
-      System.gc()
-      withFreshContext { sqlContext =>
-        val inputData = sqlContext.read.parquet(dataPath)
-        val cachedDataFrame = inputData.cache()
-        val result = runScanBenchmark(cachedDataFrame)
-        println(s"Size: ${result.cachedDataSizeBytes}, scanTime: ${result.scanTimeMilliseconds}")
+
+    def testColumnarCache(compress: Boolean): Unit = {
+      for (repetition <- 1 to numRepetitions) {
+        System.gc()
+        withFreshContext { sqlContext =>
+          sqlContext.setConf(SQLConf.COMPRESS_CACHED.key, compress.toString)
+          val inputData = sqlContext.read.parquet(dataPath)
+          val cachedDataFrame = inputData.cache()
+          val result = if (cols.isEmpty) {
+            benchmarkFullScan(cachedDataFrame)
+          } else {
+            benchmarkPrunedScan(cachedDataFrame, cols)
+          }
+          println(s"Size: ${result.cachedDataSizeBytes}, scanTime: ${result.scanTimeMilliseconds}")
+        }
       }
     }
+
+    println("-" * 80)
+    println("Columnar cache (uncompressed)")
+    println("-" * 80)
+    testColumnarCache(compress = false)
+
+    println()
+    println("-" * 80)
+    println("Columnar cache (compressed)")
+    println("-" * 80)
+    testColumnarCache(compress = true)
 
     // Next, try running the same benchmark with different configurations of the Tungsten cache
     for (
@@ -132,17 +180,31 @@ object TungstenCacheBenchmarks {
       println("-" * 80)
       println(s"Tungsten cache (compression = '$compressionType', blockSize = $blockSize)")
       println("-" * 80)
-      for (repetition <- 1 to NUM_REPETITIONS) {
+      for (repetition <- 1 to numRepetitions) {
         System.gc()
         withFreshContext { sqlContext =>
           val inputData = sqlContext.read.parquet(dataPath)
           val ctx = inputData.sqlContext
           import ctx.implicits._
           val cachedDataFrame = inputData.tungstenCache(compressionType, blockSize)
-          val result = runScanBenchmark(cachedDataFrame)
+          val result = if (cols.isEmpty) {
+            benchmarkFullScan(cachedDataFrame)
+          } else {
+            benchmarkPrunedScan(cachedDataFrame, cols)
+          }
           println(s"Size: ${result.cachedDataSizeBytes}, scanTime: ${result.scanTimeMilliseconds}")
         }
       }
     }
+  }
+
+  def main(args: Array[String]): Unit = {
+    val schema = new StructType((1 to 10).map(i => StructField(s"_$i", LongType)).toArray)
+    runBenchmark(
+      numRows = 1000 * 1000,
+      numPartitions = 10,
+      numRepetitions = 5,
+      schema,
+      cols = Seq("_1", "_2", "_3"))
   }
 }
