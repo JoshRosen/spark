@@ -151,7 +151,7 @@ object TungstenCache {
     }
 
     // Allocate a new block with compressed byte array padded to word boundary
-    val totalRecordSize = compressedBlockArray.length + 4
+    val totalRecordSize = compressedBlockArray.length + 4 // data + int to store size of padding
     val nearestWordBoundary =
       ByteArrayMethods.roundNumberOfBytesToNearestWord(totalRecordSize)
     val padding = nearestWordBoundary - totalRecordSize
