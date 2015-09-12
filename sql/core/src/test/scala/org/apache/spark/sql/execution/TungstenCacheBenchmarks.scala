@@ -25,8 +25,9 @@ import org.json4s.DefaultFormats
 import org.json4s.JsonAST._
 import org.json4s.jackson.JsonMethods
 
-import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.{TaskContext, SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.catalyst.expressions.UnsafeRow
 import org.apache.spark.sql.types.{StructType, LongType, StructField}
 import org.apache.spark.sql.{SQLConf, Row, RandomDataGenerator, SQLContext, DataFrame}
 import org.apache.spark.util.Utils
@@ -38,7 +39,10 @@ object TungstenCacheBenchmarks {
 
   private implicit val format = DefaultFormats
 
-  case class BenchmarkResult(cachedDataSizeBytes: Long, scanTimeMilliseconds: Long)
+  case class BenchmarkResult(
+    cachedDataSizeBytes: Long,
+    scanTimeMilliseconds: Long,
+    resultHash: Long)
 
   /**
    * Executes the given function with a fresh SparkContext and SQLContext.
@@ -54,17 +58,7 @@ object TungstenCacheBenchmarks {
   }
 
   /**
-   * Executes the given block and reports the time taken (in milliseconds).
-   */
-  private def timeInMillis[T](block: => T): Long = {
-    val startTime = System.currentTimeMillis()
-    block
-    val endTime = System.currentTimeMillis()
-    endTime - startTime
-  }
-
-  /**
-   * Uses the Spark UI's REST API to retrive the size, in bytes, of the cached RDD.
+   * Uses the Spark UI's REST API to retrieve the size, in bytes, of the cached RDD.
    * Assumes and asserts that only one RDD is cached and that all partitions are fully cached.
    */
   private def getCachedSizeInBytes(sc: SparkContext): Long = {
@@ -80,30 +74,31 @@ object TungstenCacheBenchmarks {
     (parsed.head \ "memoryUsed").extract[Long]
   }
 
-  private def benchmarkFullScan(cachedDataFrame: DataFrame): BenchmarkResult = {
-    // Force the data to be cached (necessary because caching is lazy):
-    cachedDataFrame.rdd.count()
-    // Figure out the size of the cached data:
-    val cachedDataSizeBytes = getCachedSizeInBytes(cachedDataFrame.sqlContext.sparkContext)
-    val durationMillis = timeInMillis {
-      cachedDataFrame.queryExecution.sparkPlan.execute().count()
+  private def hashDF(df: DataFrame, cols: Seq[String]): Long = {
+    val sparkPlan = df.select(cols.head, cols.tail: _*).queryExecution.sparkPlan
+    val rdd: RDD[UnsafeRow] = if (sparkPlan.outputsUnsafeRows) {
+      sparkPlan.execute().asInstanceOf[RDD[UnsafeRow]]
+    } else {
+      ConvertToUnsafe(sparkPlan).execute().asInstanceOf[RDD[UnsafeRow]]
     }
-    BenchmarkResult(
-      cachedDataSizeBytes = cachedDataSizeBytes, scanTimeMilliseconds = durationMillis)
+    rdd.map(_.hashCode().toLong).reduce(_ + _)
   }
 
-  private def benchmarkPrunedScan(
+  private def benchmarkScan(
       cachedDataFrame: DataFrame,
       cols: Seq[String]): BenchmarkResult = {
     // Force the data to be cached (necessary because caching is lazy):
     cachedDataFrame.rdd.count()
     // Figure out the size of the cached data:
     val cachedDataSizeBytes = getCachedSizeInBytes(cachedDataFrame.sqlContext.sparkContext)
-    val durationMillis = timeInMillis {
-      cachedDataFrame.select(cols.head, cols.tail: _*).queryExecution.sparkPlan.execute().count()
-    }
+    val startTime = System.currentTimeMillis()
+    val resultHash = hashDF(cachedDataFrame, cols)
+    val endTime = System.currentTimeMillis()
+    val durationMillis = endTime - startTime
     BenchmarkResult(
-      cachedDataSizeBytes = cachedDataSizeBytes, scanTimeMilliseconds = durationMillis)
+      cachedDataSizeBytes = cachedDataSizeBytes,
+      scanTimeMilliseconds = durationMillis,
+      resultHash = resultHash)
   }
 
   private def generateRandomDataFrame(
@@ -114,25 +109,31 @@ object TungstenCacheBenchmarks {
     val rows: RDD[Row] = sqlContext.sparkContext
       .parallelize(1L to numRows, numPartitions)
       .mapPartitions { iter =>
-      val dataGenerator =
-        RandomDataGenerator.forType(schema, nullable = false).get.asInstanceOf[() => Row]
-      iter.map(_ => dataGenerator())
-    }
+        val seed = TaskContext.get.partitionId()
+        val dataGenerator = RandomDataGenerator.forType(
+          schema, nullable = false, seed = Some(seed)).get.asInstanceOf[() => Row]
+        iter.map(_ => dataGenerator())
+      }
     sqlContext.createDataFrame(rows, schema)
   }
 
   private def runBenchmark(
       numRepetitions: Int,
       testDataGenerator: SQLContext => DataFrame,
-      cols: Seq[String] = Seq.empty // empty seq is treated as full scan
+      prunedScanCols: Option[Seq[String]] = None // None is treated as full scan
   ): Unit = {
     val tempDir = Utils.createTempDir()
     val dataPath = new File(tempDir, "inputData").getAbsolutePath
+    var expectedResultHash: Long = -1
+    var cols: Seq[String] = null
 
     withFreshContext { sqlContext =>
       // Save the input data into Parquet. We'll re-use this data across benchmarking runs.
       val inputData = testDataGenerator(sqlContext)
       inputData.write.parquet(dataPath)
+      cols = prunedScanCols.getOrElse(inputData.schema.fieldNames.toSeq)
+      expectedResultHash = hashDF(inputData, cols)
+
       val numRows = inputData.count()
       val numPartitions = inputData.rdd.partitions.length
       val schema = inputData.schema
@@ -142,8 +143,7 @@ object TungstenCacheBenchmarks {
       println(s"Benchmark configuration:")
       println(s"Number of rows: $numRows")
       println(s"Number of partitions: $numPartitions")
-      println(s"Columns to scan: " +
-        (if (cols.isEmpty) schema.fieldNames.toSeq else cols).mkString(", "))
+      println(s"Columns to scan: " + cols.mkString(", "))
       println("Schema:")
       schema.printTreeString()
       println("=" * 80)
@@ -158,11 +158,9 @@ object TungstenCacheBenchmarks {
           sqlContext.setConf(SQLConf.COMPRESS_CACHED.key, compress.toString)
           val inputData = sqlContext.read.parquet(dataPath)
           val cachedDataFrame = inputData.cache()
-          val result = if (cols.isEmpty) {
-            benchmarkFullScan(cachedDataFrame)
-          } else {
-            benchmarkPrunedScan(cachedDataFrame, cols)
-          }
+          val result = benchmarkScan(cachedDataFrame, cols)
+          assert(result.resultHash == expectedResultHash,
+            s"Hash ${result.resultHash} did not equal expected hash ($expectedResultHash)")
           println(s"Size: ${result.cachedDataSizeBytes}, scanTime: ${result.scanTimeMilliseconds}")
         }
       }
@@ -195,11 +193,8 @@ object TungstenCacheBenchmarks {
           val ctx = inputData.sqlContext
           import ctx.implicits._
           val cachedDataFrame = inputData.tungstenCache(compressionType, blockSize)
-          val result = if (cols.isEmpty) {
-            benchmarkFullScan(cachedDataFrame)
-          } else {
-            benchmarkPrunedScan(cachedDataFrame, cols)
-          }
+          val result = benchmarkScan(cachedDataFrame, cols)
+          assert(result.resultHash == expectedResultHash)
           println(s"Size: ${result.cachedDataSizeBytes}, scanTime: ${result.scanTimeMilliseconds}")
         }
       }
@@ -211,9 +206,9 @@ object TungstenCacheBenchmarks {
       numRepetitions = 5,
       generateRandomDataFrame(_: SQLContext,
         new StructType((1 to 10).map(i => StructField(s"_$i", LongType)).toArray),
-        numRows = 1000 * 1000,
+        numRows = 1,
         numPartitions = 10),
-      cols = Seq("_1"))
+      prunedScanCols = Some(Seq("_1")))
 
     runBenchmark(
       numRepetitions = 5,
@@ -221,7 +216,7 @@ object TungstenCacheBenchmarks {
         new StructType((1 to 10).map(i => StructField(s"_$i", LongType)).toArray),
         numRows = 1000 * 1000,
         numPartitions = 10),
-      cols = Seq.empty)
+      prunedScanCols = None)
 
     // Nested data
     runBenchmark(
@@ -231,6 +226,6 @@ object TungstenCacheBenchmarks {
           StructField("a", StructType(StructField("f", LongType) :: Nil)) :: Nil),
         numRows = 1000 * 1000,
         numPartitions = 10),
-      cols = Seq.empty)
+      prunedScanCols = None)
   }
 }
