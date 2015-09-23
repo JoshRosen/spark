@@ -43,11 +43,11 @@ private[spark] trait ShuffleManager {
    * Get a reader for a range of reduce partitions (startPartition to endPartition-1, inclusive).
    * Called on executors by reduce tasks.
    */
-  def getReader(
+  def getReader[K, C](
       handle: ShuffleHandle,
       startPartition: Int,
       endPartition: Int,
-      context: TaskContext): BinaryShuffleReader
+      context: TaskContext): ShuffleReader[K, C]
 
   /**
     * Remove a shuffle's metadata from the ShuffleManager.
