@@ -17,7 +17,7 @@
 
 package org.apache.spark.scheduler
 
-import org.apache.spark.ShuffleDependency
+import org.apache.spark.{BaseShuffleDependency, ShuffleDependency}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.CallSite
@@ -40,7 +40,7 @@ private[spark] class ShuffleMapStage(
     parents: List[Stage],
     firstJobId: Int,
     callSite: CallSite,
-    val shuffleDep: ShuffleDependency[_, _, _])
+    val shuffleDep: BaseShuffleDependency[_])
   extends Stage(id, rdd, numTasks, parents, firstJobId, callSite) {
 
   override def toString: String = "ShuffleMapStage " + id

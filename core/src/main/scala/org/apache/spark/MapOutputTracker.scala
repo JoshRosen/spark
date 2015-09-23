@@ -145,11 +145,11 @@ private[spark] abstract class MapOutputTracker(conf: SparkConf) extends Logging 
   /**
    * Return statistics about all of the outputs for a given shuffle.
    */
-  def getStatistics(dep: ShuffleDependency[_, _, _]): MapOutputStatistics = {
+  def getStatistics(dep: BaseShuffleDependency[_]): MapOutputStatistics = {
     val statuses = getStatuses(dep.shuffleId)
     // Synchronize on the returned array because, on the driver, it gets mutated in place
     statuses.synchronized {
-      val totalSizes = new Array[Long](dep.partitioner.numPartitions)
+      val totalSizes = new Array[Long](dep.numPartitions)
       for (s <- statuses) {
         for (i <- 0 until totalSizes.length) {
           totalSizes(i) += s.getSizeForBlock(i)
