@@ -88,16 +88,15 @@ private[spark] class ShuffleMapTask(
             }
             throw e
         }
-      case other =>
-        val customWriter = other.customShuffleWriter.getOrElse {
-          throw new IllegalArgumentException("Expected a custom shuffle writer to be defined")
-        }.asInstanceOf[(BinaryShuffleWriter, Iterator[Any]) => Unit]
+      case binaryDep: BinaryShuffleDependency[_] =>
         // TODO(josh): Work around this limitation / document it.
         val blockResolver = SparkEnv.get.shuffleManager.shuffleBlockResolver
           .asInstanceOf[IndexShuffleBlockResolver]
         val binaryWriter = new BinaryShuffleWriter(blockResolver, dep.shuffleId, partition.index)
+        val writeFunc =
+          binaryDep.writeFunc.asInstanceOf[(BinaryShuffleWriter, Iterator[Any]) => Unit]
         try {
-          customWriter(binaryWriter, rdd.iterator(partition, context))
+          writeFunc(binaryWriter, rdd.iterator(partition, context))
           MapStatus(SparkEnv.get.blockManager.blockManagerId, binaryWriter.getPartitionLengths())
         } catch {
           case NonFatal(e) =>

@@ -89,7 +89,7 @@ class ShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
 }
 
 
-private[spark] class BaseShuffleDependency[T: ClassTag](
+private[spark] abstract class BaseShuffleDependency[T: ClassTag](
     @transient private val _rdd: RDD[T],
     val numPartitions: Int) extends Dependency[T] {
 
@@ -97,19 +97,14 @@ private[spark] class BaseShuffleDependency[T: ClassTag](
 
   val shuffleId: Int = _rdd.context.newShuffleId()
 
-  private var _customShuffleWriter: Option[(BinaryShuffleWriter, Iterator[T]) => Unit] = None
-
-  private[spark] def setCustomShuffleWriter(func: (BinaryShuffleWriter, Iterator[T]) => Unit) = {
-    require(_customShuffleWriter.isEmpty)
-    _customShuffleWriter = Some(func)
-  }
-
-  private[spark] def customShuffleWriter: Option[(BinaryShuffleWriter, Iterator[T]) => Unit] = {
-    _customShuffleWriter
-  }
-
   _rdd.sparkContext.cleaner.foreach(_.registerShuffleForCleanup(this))
 }
+
+private[spark] class BinaryShuffleDependency[T: ClassTag](
+    _rdd: RDD[T],
+    numPartitions: Int,
+    val writeFunc: (BinaryShuffleWriter, Iterator[T]) => Unit)
+  extends BaseShuffleDependency(_rdd, numPartitions)
 
 
 /**

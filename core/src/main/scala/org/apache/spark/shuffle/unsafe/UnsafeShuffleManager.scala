@@ -162,13 +162,17 @@ private[spark] class UnsafeShuffleManager(conf: SparkConf) extends ShuffleManage
       case unsafeShuffleHandle: UnsafeShuffleHandle[K @unchecked, V @unchecked] =>
         numMapsForShufflesThatUsedNewPath.putIfAbsent(handle.shuffleId, unsafeShuffleHandle.numMaps)
         val env = SparkEnv.get
+        val binaryWriter = new BinaryShuffleWriter(
+          shuffleBlockResolver.asInstanceOf[IndexShuffleBlockResolver],
+          handle.shuffleId,
+          mapId)
         new UnsafeShuffleWriter(
           env.blockManager,
-          shuffleBlockResolver.asInstanceOf[IndexShuffleBlockResolver],
+          binaryWriter,
           context.taskMemoryManager(),
           env.shuffleMemoryManager,
-          unsafeShuffleHandle,
-          mapId,
+          unsafeShuffleHandle.dependency.partitioner,
+          unsafeShuffleHandle.dependency.serializer,
           context,
           env.conf)
       case other =>
