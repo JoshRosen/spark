@@ -22,7 +22,7 @@ import scala.reflect.ClassTag
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
-import org.apache.spark.shuffle.ShuffleHandle
+import org.apache.spark.shuffle.{BinaryShuffleWriter, ShuffleHandle}
 
 /**
  * :: DeveloperApi ::
@@ -89,13 +89,24 @@ class ShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
 }
 
 
-class BaseShuffleDependency[T: ClassTag](
+private[spark] class BaseShuffleDependency[T: ClassTag](
     @transient private val _rdd: RDD[T],
     val numPartitions: Int) extends Dependency[T] {
 
   override def rdd: RDD[T] = _rdd
 
   val shuffleId: Int = _rdd.context.newShuffleId()
+
+  private var _customShuffleWriter: Option[(BinaryShuffleWriter, Iterator[T]) => Unit] = None
+
+  private[spark] def setCustomShuffleWriter(func: (BinaryShuffleWriter, Iterator[T]) => Unit) = {
+    require(_customShuffleWriter.isEmpty)
+    _customShuffleWriter = Some(func)
+  }
+
+  private[spark] def customShuffleWriter: Option[(BinaryShuffleWriter, Iterator[T]) => Unit] = {
+    _customShuffleWriter
+  }
 
   _rdd.sparkContext.cleaner.foreach(_.registerShuffleForCleanup(this))
 }

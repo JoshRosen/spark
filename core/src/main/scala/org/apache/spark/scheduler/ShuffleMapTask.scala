@@ -20,11 +20,12 @@ package org.apache.spark.scheduler
 import java.nio.ByteBuffer
 
 import scala.language.existentials
+import scala.util.control.NonFatal
 
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
-import org.apache.spark.shuffle.ShuffleWriter
+import org.apache.spark.shuffle.{BinaryShuffleWriter, IndexShuffleBlockResolver, ShuffleWriter}
 
 /**
 * A ShuffleMapTask divides the elements of an RDD into multiple buckets (based on a partitioner
@@ -34,7 +35,7 @@ import org.apache.spark.shuffle.ShuffleWriter
 *
  * @param stageId id of the stage this task belongs to
  * @param taskBinary broadcast version of the RDD and the ShuffleDependency. Once deserialized,
- *                   the type should be (RDD[_], ShuffleDependency[_, _, _]).
+ *                   the type should be (RDD[_], BaseShuffleDependency[_]).
  * @param partition partition of the RDD this task is associated with
  * @param locs preferred task execution locations for locality scheduling
  */
@@ -61,28 +62,53 @@ private[spark] class ShuffleMapTask(
     // Deserialize the RDD using the broadcast variable.
     val deserializeStartTime = System.currentTimeMillis()
     val ser = SparkEnv.get.closureSerializer.newInstance()
-    val (rdd, dep) = ser.deserialize[(RDD[_], ShuffleDependency[_, _, _])](
+    val (rdd, dep) = ser.deserialize[(RDD[_], BaseShuffleDependency[_])](
       ByteBuffer.wrap(taskBinary.value), Thread.currentThread.getContextClassLoader)
     _executorDeserializeTime = System.currentTimeMillis() - deserializeStartTime
-
     metrics = Some(context.taskMetrics)
-    var writer: ShuffleWriter[Any, Any] = null
-    try {
-      val manager = SparkEnv.get.shuffleManager
-      writer = manager.getWriter[Any, Any](dep.shuffleHandle, partitionId, context)
-      writer.write(rdd.iterator(partition, context).asInstanceOf[Iterator[_ <: Product2[Any, Any]]])
-      writer.stop(success = true).get
-    } catch {
-      case e: Exception =>
+
+    dep match {
+      case objDep: ShuffleDependency[_, _, _] =>
+        var writer: ShuffleWriter[Any, Any] = null
         try {
-          if (writer != null) {
-            writer.stop(success = false)
-          }
+          val manager = SparkEnv.get.shuffleManager
+          writer = manager.getWriter[Any, Any](objDep.shuffleHandle, partitionId, context)
+          writer.write(rdd.iterator(partition, context)
+            .asInstanceOf[Iterator[_ <: Product2[Any, Any]]])
+          writer.stop(success = true).get
         } catch {
-          case e: Exception =>
-            log.debug("Could not stop writer", e)
+          case NonFatal(e) =>
+            try {
+              if (writer != null) {
+                writer.stop(success = false)
+              }
+            } catch {
+              case NonFatal(e2) =>
+                log.debug("Could not stop writer", e2)
+            }
+            throw e
         }
-        throw e
+      case other =>
+        val customWriter = other.customShuffleWriter.getOrElse {
+          throw new IllegalArgumentException("Expected a custom shuffle writer to be defined")
+        }.asInstanceOf[(BinaryShuffleWriter, Iterator[Any]) => Unit]
+        // TODO(josh): Work around this limitation / document it.
+        val blockResolver = SparkEnv.get.shuffleManager.shuffleBlockResolver
+          .asInstanceOf[IndexShuffleBlockResolver]
+        val binaryWriter = new BinaryShuffleWriter(blockResolver, dep.shuffleId, partition.index)
+        try {
+          customWriter(binaryWriter, rdd.iterator(partition, context))
+          MapStatus(SparkEnv.get.blockManager.blockManagerId, binaryWriter.getPartitionLengths())
+        } catch {
+          case NonFatal(e) =>
+            try {
+              binaryWriter.abort()
+            } catch {
+            case NonFatal(e2) =>
+              log.debug("Could not abort / revert writes", e2)
+            }
+            throw e
+        }
     }
   }
 
