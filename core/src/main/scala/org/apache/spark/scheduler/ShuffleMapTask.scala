@@ -97,7 +97,7 @@ private[spark] class ShuffleMapTask(
           (TaskContext, BinaryShuffleWriter, Iterator[Any]) => Unit]
         try {
           writeFunc(context, binaryWriter, rdd.iterator(partition, context))
-          MapStatus(SparkEnv.get.blockManager.blockManagerId, binaryWriter.getPartitionLengths())
+          MapStatus(SparkEnv.get.blockManager.blockManagerId, binaryWriter.getPartitionLengths)
         } catch {
           case NonFatal(e) =>
             try {
