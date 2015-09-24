@@ -32,9 +32,9 @@ private[spark] abstract class BinaryShuffledRDD[ParentType: ClassTag, OutputType
 
   // -- Methods to be overridden by subclasses ----------------------------------------------------
 
-  def write(writer: BinaryShuffleWriter, iter: Iterator[ParentType]): Unit
+  def write(context: TaskContext, writer: BinaryShuffleWriter, iter: Iterator[ParentType]): Unit
 
-  def read(iter: Iterator[InputStream]): Iterator[OutputType]
+  def read(context: TaskContext, iter: Iterator[InputStream]): Iterator[OutputType]
 
   // -- Private internal methods ------------------------------------------------------------------
 
@@ -57,7 +57,7 @@ private[spark] abstract class BinaryShuffledRDD[ParentType: ClassTag, OutputType
       mapOutputTracker.getMapSizesByExecutorId(dep.shuffleId, split.index),
       // Note: we use getSizeAsMb when no suffix is provided for backwards compatibility
       SparkEnv.get.conf.getSizeAsMb("spark.reducer.maxSizeInFlight", "48m") * 1024 * 1024)
-    read(blockFetcherItr.map(_._2))
+    read(context, blockFetcherItr.map(_._2))
   }
 
   override def clearDependencies() {

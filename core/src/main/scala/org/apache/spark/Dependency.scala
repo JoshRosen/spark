@@ -103,7 +103,7 @@ private[spark] abstract class BaseShuffleDependency[T: ClassTag](
 private[spark] class BinaryShuffleDependency[T: ClassTag](
     _rdd: RDD[T],
     numPartitions: Int,
-    val writeFunc: (BinaryShuffleWriter, Iterator[T]) => Unit)
+    val writeFunc: (TaskContext, BinaryShuffleWriter, Iterator[T]) => Unit)
   extends BaseShuffleDependency[T](_rdd, numPartitions)
 
 

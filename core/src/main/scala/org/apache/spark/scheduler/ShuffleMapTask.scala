@@ -93,10 +93,10 @@ private[spark] class ShuffleMapTask(
         val blockResolver = SparkEnv.get.shuffleManager.shuffleBlockResolver
           .asInstanceOf[IndexShuffleBlockResolver]
         val binaryWriter = new BinaryShuffleWriter(blockResolver, dep.shuffleId, partition.index)
-        val writeFunc =
-          binaryDep.writeFunc.asInstanceOf[(BinaryShuffleWriter, Iterator[Any]) => Unit]
+        val writeFunc = binaryDep.writeFunc.asInstanceOf[
+          (TaskContext, BinaryShuffleWriter, Iterator[Any]) => Unit]
         try {
-          writeFunc(binaryWriter, rdd.iterator(partition, context))
+          writeFunc(context, binaryWriter, rdd.iterator(partition, context))
           MapStatus(SparkEnv.get.blockManager.blockManagerId, binaryWriter.getPartitionLengths())
         } catch {
           case NonFatal(e) =>

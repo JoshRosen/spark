@@ -39,10 +39,10 @@ class UnsafeShuffledRowRDD(
   private val ser = new UnsafeRowSerializer(numFields)
 
   override def write(
-    binaryWriter: BinaryShuffleWriter,
+      context: TaskContext,
+      binaryWriter: BinaryShuffleWriter,
       iter: Iterator[Product2[Int, UnsafeRow]]): Unit = {
     val env = SparkEnv.get
-    val context = TaskContext.get()
     val writer = new UnsafeShuffleWriter[Int, UnsafeRow](
       env.blockManager,
       binaryWriter,
@@ -61,7 +61,7 @@ class UnsafeShuffledRowRDD(
     }
   }
 
-  override def read(blockIter: Iterator[InputStream]): Iterator[UnsafeRow] = {
+  override def read(context: TaskContext, blockIter: Iterator[InputStream]): Iterator[UnsafeRow] = {
     val wrappedStreams = blockIter.map { inputStream =>
       // TODO: configure / respect compression settings
       CompressionCodec.createCodec(SparkEnv.get.conf).compressedInputStream(inputStream)
@@ -75,8 +75,6 @@ class UnsafeShuffledRowRDD(
       // underlying InputStream when all records have been read.
       serializerInstance.deserializeStream(wrappedStream).asKeyValueIterator
     }.map(_._2).asInstanceOf[Iterator[UnsafeRow]]
-
-    val context = TaskContext.get()
 
     // Update the context task metrics for each record read.
     val readMetrics = context.taskMetrics().createShuffleReadMetricsForDependency()
