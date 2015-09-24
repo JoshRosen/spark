@@ -26,7 +26,7 @@ import org.apache.spark.io.CompressionCodec
 import org.apache.spark.serializer.Serializer
 
 
-class ObjectShuffleReader[K, V, C](dep: ShuffleDependency[K, V, C]) {
+private[spark] class ObjectShuffleReader[K, V, C](dep: ShuffleDependency[K, V, C]) {
 
   private val conf = SparkEnv.get.conf
 
