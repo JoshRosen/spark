@@ -130,7 +130,6 @@ case class Exchange(newPartitioning: Partitioning, child: SparkPlan) extends Una
   @transient private lazy val sparkConf = child.sqlContext.sparkContext.getConf
 
   private val serializer: Serializer = {
-    val rowDataTypes = child.output.map(_.dataType).toArray
     if (tungstenMode) {
       new UnsafeRowSerializer(child.output.size)
     } else {
@@ -181,7 +180,17 @@ case class Exchange(newPartitioning: Partitioning, child: SparkPlan) extends Una
         }
       }
     }
-    new ShuffledRowRDD(rddWithPartitionIds, serializer, part.numPartitions)
+    val shuffleManager = SparkEnv.get.shuffleManager
+    val sortBasedShuffleOn = shuffleManager.isInstanceOf[SortShuffleManager] ||
+      shuffleManager.isInstanceOf[UnsafeShuffleManager]
+    if (sortBasedShuffleOn && tungstenMode) {
+      new UnsafeShuffledRowRDD(
+        rddWithPartitionIds.asInstanceOf[RDD[Product2[Int, UnsafeRow]]],
+        child.output.size,
+        part.numPartitions).asInstanceOf[RDD[InternalRow]]
+    } else {
+      new ShuffledRowRDD(rddWithPartitionIds, serializer, part.numPartitions)
+    }
   }
 }
 
