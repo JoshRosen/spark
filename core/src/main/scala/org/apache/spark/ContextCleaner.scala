@@ -131,7 +131,7 @@ private[spark] class ContextCleaner(sc: SparkContext) extends Logging {
   }
 
   /** Register a ShuffleDependency for cleanup when it is garbage collected. */
-  def registerShuffleForCleanup(shuffleDependency: ShuffleDependency[_, _, _]): Unit = {
+  def registerShuffleForCleanup(shuffleDependency: BaseShuffleDependency[_]): Unit = {
     registerForCleanup(shuffleDependency, CleanShuffle(shuffleDependency.shuffleId))
   }
 

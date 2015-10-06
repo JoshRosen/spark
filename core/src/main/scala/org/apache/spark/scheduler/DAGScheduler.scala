@@ -292,7 +292,7 @@ class DAGScheduler(
    * Get or create a shuffle map stage for the given shuffle dependency's map side.
    */
   private def getShuffleMapStage(
-      shuffleDep: ShuffleDependency[_, _, _],
+      shuffleDep: BaseShuffleDependency[_],
       firstJobId: Int): ShuffleMapStage = {
     shuffleToMapStage.get(shuffleDep.shuffleId) match {
       case Some(stage) => stage
@@ -326,7 +326,7 @@ class DAGScheduler(
   private def newShuffleMapStage(
       rdd: RDD[_],
       numTasks: Int,
-      shuffleDep: ShuffleDependency[_, _, _],
+      shuffleDep: BaseShuffleDependency[_],
       firstJobId: Int,
       callSite: CallSite): ShuffleMapStage = {
     val (parentStages: List[Stage], id: Int) = getParentStagesAndId(rdd, firstJobId)
@@ -361,7 +361,7 @@ class DAGScheduler(
    * recovered from the MapOutputTracker
    */
   private def newOrUsedShuffleStage(
-      shuffleDep: ShuffleDependency[_, _, _],
+      shuffleDep: BaseShuffleDependency[_],
       firstJobId: Int): ShuffleMapStage = {
     val rdd = shuffleDep.rdd
     val numTasks = rdd.partitions.length
@@ -399,7 +399,7 @@ class DAGScheduler(
         // we can't do it in its constructor because # of partitions is unknown
         for (dep <- r.dependencies) {
           dep match {
-            case shufDep: ShuffleDependency[_, _, _] =>
+            case shufDep: BaseShuffleDependency[_] =>
               parents += getShuffleMapStage(shufDep, firstJobId)
             case _ =>
               waitingForVisit.push(dep.rdd)
@@ -415,8 +415,8 @@ class DAGScheduler(
   }
 
   /** Find ancestor shuffle dependencies that are not registered in shuffleToMapStage yet */
-  private def getAncestorShuffleDependencies(rdd: RDD[_]): Stack[ShuffleDependency[_, _, _]] = {
-    val parents = new Stack[ShuffleDependency[_, _, _]]
+  private def getAncestorShuffleDependencies(rdd: RDD[_]): Stack[BaseShuffleDependency[_]] = {
+    val parents = new Stack[BaseShuffleDependency[_]]
     val visited = new HashSet[RDD[_]]
     // We are manually maintaining a stack here to prevent StackOverflowError
     // caused by recursively visiting
@@ -426,7 +426,7 @@ class DAGScheduler(
         visited += r
         for (dep <- r.dependencies) {
           dep match {
-            case shufDep: ShuffleDependency[_, _, _] =>
+            case shufDep: BaseShuffleDependency[_] =>
               if (!shuffleToMapStage.contains(shufDep.shuffleId)) {
                 parents.push(shufDep)
               }
@@ -457,7 +457,7 @@ class DAGScheduler(
         if (rddHasUncachedPartitions) {
           for (dep <- rdd.dependencies) {
             dep match {
-              case shufDep: ShuffleDependency[_, _, _] =>
+              case shufDep: BaseShuffleDependency[_] =>
                 val mapStage = getShuffleMapStage(shufDep, stage.firstJobId)
                 if (!mapStage.isAvailable) {
                   missing += mapStage
@@ -873,7 +873,7 @@ class DAGScheduler(
   }
 
   private[scheduler] def handleMapStageSubmitted(jobId: Int,
-      dependency: ShuffleDependency[_, _, _],
+      dependency: BaseShuffleDependency[_],
       callSite: CallSite,
       listener: JobListener,
       properties: Properties) {
@@ -1499,7 +1499,7 @@ class DAGScheduler(
         visitedRdds += rdd
         for (dep <- rdd.dependencies) {
           dep match {
-            case shufDep: ShuffleDependency[_, _, _] =>
+            case shufDep: BaseShuffleDependency[_] =>
               val mapStage = getShuffleMapStage(shufDep, stage.firstJobId)
               if (!mapStage.isAvailable) {
                 waitingForVisit.push(mapStage.rdd)
@@ -1577,7 +1577,7 @@ class DAGScheduler(
     // have at least REDUCER_PREF_LOCS_FRACTION of data as preferred locations
     if (shuffleLocalityEnabled && rdd.partitions.length < SHUFFLE_PREF_REDUCE_THRESHOLD) {
       rdd.dependencies.foreach {
-        case s: ShuffleDependency[_, _, _] =>
+        case s: BaseShuffleDependency[_] =>
           if (s.rdd.partitions.length < SHUFFLE_PREF_MAP_THRESHOLD) {
             // Get the preferred map output locations for this reducer
             val topLocsForReducer = mapOutputTracker.getLocationsWithLargestOutputs(s.shuffleId,

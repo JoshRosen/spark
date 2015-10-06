@@ -22,7 +22,7 @@ import scala.reflect.ClassTag
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
-import org.apache.spark.shuffle.ShuffleHandle
+import org.apache.spark.shuffle.{BinaryShuffleWriter, ShuffleHandle}
 
 /**
  * :: DeveloperApi ::
@@ -68,15 +68,14 @@ abstract class NarrowDependency[T](_rdd: RDD[T]) extends Dependency[T] {
  */
 @DeveloperApi
 class ShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
-    @transient private val _rdd: RDD[_ <: Product2[K, V]],
+    _rdd: RDD[_ <: Product2[K, V]],
     val partitioner: Partitioner,
     val serializer: Option[Serializer] = None,
     val keyOrdering: Option[Ordering[K]] = None,
     val aggregator: Option[Aggregator[K, V, C]] = None,
     val mapSideCombine: Boolean = false)
-  extends Dependency[Product2[K, V]] {
-
-  override def rdd: RDD[Product2[K, V]] = _rdd.asInstanceOf[RDD[Product2[K, V]]]
+  extends BaseShuffleDependency[Product2[K, V]](
+    _rdd.asInstanceOf[RDD[Product2[K, V]]], partitioner.numPartitions) {
 
   private[spark] val keyClassName: String = reflect.classTag[K].runtimeClass.getName
   private[spark] val valueClassName: String = reflect.classTag[V].runtimeClass.getName
@@ -85,13 +84,27 @@ class ShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
   private[spark] val combinerClassName: Option[String] =
     Option(reflect.classTag[C]).map(_.runtimeClass.getName)
 
-  val shuffleId: Int = _rdd.context.newShuffleId()
-
   val shuffleHandle: ShuffleHandle = _rdd.context.env.shuffleManager.registerShuffle(
     shuffleId, _rdd.partitions.size, this)
+}
+
+
+private[spark] abstract class BaseShuffleDependency[T: ClassTag](
+    @transient private val _rdd: RDD[T],
+    val numPartitions: Int) extends Dependency[T] {
+
+  override def rdd: RDD[T] = _rdd
+
+  val shuffleId: Int = _rdd.context.newShuffleId()
 
   _rdd.sparkContext.cleaner.foreach(_.registerShuffleForCleanup(this))
 }
+
+private[spark] class BinaryShuffleDependency[T: ClassTag](
+    _rdd: RDD[T],
+    numPartitions: Int,
+    val writeFunc: (TaskContext, BinaryShuffleWriter, Iterator[T]) => Unit)
+  extends BaseShuffleDependency[T](_rdd, numPartitions)
 
 
 /**
