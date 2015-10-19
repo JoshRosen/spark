@@ -83,11 +83,23 @@ class WholeTextFileS3IntegrationSuite
   }
 
   test("Read file with zero bytes (SPARK-11177)") {
-    // Note that the bug reported in SPARK-11177 only occurred on Hadoop 1.x builds of Spark
+    // SPARK-11177 was only reproducible on Hadoop 1.x builds
     val emptyFilePath = new Path(tempDir, "emptyFile")
     assert(fs.createNewFile(emptyFilePath))
     assert(fs.getFileStatus(emptyFilePath).getLen === 0)
     assert(sc.wholeTextFiles(tempDir).keys.collect() === Array(emptyFilePath.toString))
     assert(sc.wholeTextFiles(tempDir).values.flatMap(_.split("\n")).count() === 1)
+  }
+
+  test("Read individual .txt file instead of directory of files (SPARK-4414)") {
+    // SPARK-4414 was only reproducible on Hadoop 1.0.4 builds (and possibly earlier) but not
+    // on Hadoop 1.2.1 or newer.
+    val testFilePath = new Path(tempDir, "testFile.txt")
+    val os = fs.create(testFilePath)
+    os.write("Hello".getBytes("utf-8"))
+    os.close()
+    val pathToRead = testFilePath.toString
+    assert(sc.wholeTextFiles(pathToRead).keys.collect() === Array(pathToRead))
+    assert(sc.wholeTextFiles(pathToRead).values.flatMap(_.split("\n")).collect() === Array("Hello"))
   }
 }
