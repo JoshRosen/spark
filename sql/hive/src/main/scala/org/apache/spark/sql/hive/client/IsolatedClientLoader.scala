@@ -17,11 +17,12 @@
 
 package org.apache.spark.sql.hive.client
 
-import java.io.File
+import java.io.{InputStream, File}
 import java.lang.reflect.InvocationTargetException
 import java.net.{URL, URLClassLoader}
 import java.util
 
+import scala.collection.JavaConverters._
 import scala.language.reflectiveCalls
 import scala.util.Try
 
@@ -67,16 +68,13 @@ private[hive] object IsolatedClientLoader {
   private def downloadVersion(version: HiveVersion, ivyPath: Option[String]): Seq[URL] = {
     val hiveArtifacts = version.extraDeps ++
       Seq("hive-metastore", "hive-exec", "hive-common", "hive-serde")
-        .map(a => s"org.apache.hive:$a:${version.fullVersion}") ++
-      Seq("com.google.guava:guava:14.0.1",
-        "org.apache.hadoop:hadoop-client:2.4.0")
-
+        .map(a => s"org.apache.hive:$a:${version.fullVersion}")
     val classpath = quietly {
       SparkSubmitUtils.resolveMavenCoordinates(
         hiveArtifacts.mkString(","),
         Some("http://www.datanucleus.org/downloads/maven2"),
         ivyPath,
-        exclusions = version.exclusions)
+        exclusions = version.exclusions ++ Seq("org.apache.hadoop:*", "com.google.guava:guava"))
     }
     val allFiles = classpath.split(",").map(new File(_)).toSet
 
@@ -169,12 +167,29 @@ private[hive] class IsolatedClientLoader(
               defineClass(name, bytes, 0, bytes.length)
             } else if (!isSharedClass(name)) {
               logDebug(s"hive class: $name - ${getResource(classToPath(name))}")
-              super.loadClass(name, resolve)
+              try {
+                super.loadClass(name, resolve)
+              } catch {
+                case e: ClassNotFoundException =>
+                  baseClassLoader.loadClass(name)
+              }
             } else {
               // For shared classes, we delegate to baseClassLoader.
               logDebug(s"shared class: $name")
               baseClassLoader.loadClass(name)
             }
+          }
+          override def getResources(name: String): util.Enumeration[URL] = {
+            val superResources = super.getResources(name).asScala
+            val baseResources = baseClassLoader.getResources(name).asScala
+            (superResources ++ baseResources).asJavaEnumeration
+          }
+          override def getResourceAsStream(name: String): InputStream = {
+            Option(super.getResourceAsStream(name))
+              .getOrElse(baseClassLoader.getResourceAsStream(name))
+          }
+          override def getResource(name: String): URL = {
+            Option(super.getResource(name)).getOrElse(baseClassLoader.getResource(name))
           }
         }
       } else {
