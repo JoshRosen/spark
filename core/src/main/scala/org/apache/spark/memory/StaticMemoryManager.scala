@@ -72,8 +72,11 @@ private[spark] class StaticMemoryManager(
       numBytes: Long,
       evictedBlocks: mutable.Buffer[(BlockId, BlockStatus)]): Boolean = synchronized {
     val currentUnrollMemory = storageMemoryPool.memoryStore.currentUnrollMemory
-    val maxNumBytesToFree = math.max(0, maxMemoryToEvictForUnroll - currentUnrollMemory)
-    val numBytesToFree = math.min(numBytes, maxNumBytesToFree)
+    val freeMemory = storageMemoryPool.memoryFree
+    val maxNumBytesToFree = math.max(0,
+      maxMemoryToEvictForUnroll - currentUnrollMemory - freeMemory)
+    // Keep it within the range 0 <= X <= maxNumBytesToFree
+    val numBytesToFree = math.max(0, math.min(maxNumBytesToFree, numBytes - freeMemory))
     storageMemoryPool.acquireMemory(blockId, numBytes, numBytesToFree, evictedBlocks)
   }
 
