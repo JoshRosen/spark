@@ -47,6 +47,7 @@ private[spark] class CacheManager(blockManager: BlockManager) extends Logging {
         existingMetrics.incBytesReadInternal(blockResult.bytes)
 
         val iter = blockResult.data.asInstanceOf[Iterator[T]]
+
         new InterruptibleIterator[T](context, iter) {
           override def next(): T = {
             existingMetrics.incRecordsReadInternal(1)
@@ -65,28 +66,14 @@ private[spark] class CacheManager(blockManager: BlockManager) extends Logging {
         try {
           logInfo(s"Partition $key not found, computing it")
           val computedValues = rdd.computeOrReadCheckpoint(partition, context)
-
-          // If the task is running locally, do not persist the result
-          if (context.isRunningLocally) {
-            return computedValues
+          blockManager.putIterator(key, computedValues, storageLevel) // TODO check return
+          val cachedValues = blockManager.get(key) match {
+            case Some(v) => v.data.asInstanceOf[Iterator[T]]
+            case None =>
+              val msg = s"Block manager failed to return cached value for $key!"
+              logInfo(msg)
+              throw new BlockException(key, msg)
           }
-
-          // Otherwise, cache the values and keep track of any updates in block statuses
-          val updatedBlocks = new ArrayBuffer[(BlockId, BlockStatus)]
-          val cachedValues = {
-            updatedBlocks ++=
-              blockManager.putIterator(key, computedValues, storageLevel, tellMaster = true)
-            blockManager.get(key) match {
-              case Some(v) => v.data.asInstanceOf[Iterator[T]]
-              case None =>
-                val msg = s"Block manager failed to return cached value for $key!"
-                logInfo(msg)
-                throw new BlockException(key, msg)
-            }
-          }
-          val metrics = context.taskMetrics
-          val lastUpdatedBlocks = metrics.updatedBlocks.getOrElse(Seq[(BlockId, BlockStatus)]())
-          metrics.updatedBlocks = Some(lastUpdatedBlocks ++ updatedBlocks.toSeq)
           new InterruptibleIterator(context, cachedValues)
         } finally {
           loading.synchronized {
