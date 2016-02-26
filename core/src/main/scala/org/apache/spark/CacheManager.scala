@@ -18,7 +18,6 @@
 package org.apache.spark
 
 import scala.collection.mutable
-import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage._
@@ -44,14 +43,13 @@ private[spark] class CacheManager(blockManager: BlockManager) extends Logging {
     blockManager.get(key) match {
       case Some(blockResult) =>
         // Partition is already materialized, so just return its values
-        val existingMetrics = context.taskMetrics
-          .getInputMetricsForReadMethod(blockResult.readMethod)
-        existingMetrics.incBytesRead(blockResult.bytes)
+        val existingMetrics = context.taskMetrics().registerInputMetrics(blockResult.readMethod)
+        existingMetrics.incBytesReadInternal(blockResult.bytes)
 
         val iter = blockResult.data.asInstanceOf[Iterator[T]]
         new InterruptibleIterator[T](context, iter) {
           override def next(): T = {
-            existingMetrics.incRecordsRead(1)
+            existingMetrics.incRecordsReadInternal(1)
             delegate.next()
           }
         }
@@ -90,7 +88,6 @@ private[spark] class CacheManager(blockManager: BlockManager) extends Logging {
           val lastUpdatedBlocks = metrics.updatedBlocks.getOrElse(Seq[(BlockId, BlockStatus)]())
           metrics.updatedBlocks = Some(lastUpdatedBlocks ++ updatedBlocks.toSeq)
           new InterruptibleIterator(context, cachedValues)
-
         } finally {
           loading.synchronized {
             loading.remove(key)

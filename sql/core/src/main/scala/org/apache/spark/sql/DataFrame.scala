@@ -18,7 +18,6 @@
 package org.apache.spark.sql
 
 import java.io.CharArrayWriter
-import java.util.Properties
 
 import scala.language.implicitConversions
 import scala.reflect.ClassTag
@@ -30,20 +29,21 @@ import org.apache.spark.annotation.{DeveloperApi, Experimental}
 import org.apache.spark.api.java.JavaRDD
 import org.apache.spark.api.python.PythonRDD
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.catalyst.{CatalystTypeConverters, InternalRow, ScalaReflection, SqlParser}
+import org.apache.spark.sql.catalyst._
 import org.apache.spark.sql.catalyst.analysis._
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
+import org.apache.spark.sql.catalyst.optimizer.CombineUnions
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.logical._
-import org.apache.spark.sql.execution.{EvaluatePython, ExplainCommand, FileRelation, LogicalRDD, Queryable, QueryExecution, SQLExecution}
+import org.apache.spark.sql.catalyst.util.usePrettyExpression
+import org.apache.spark.sql.execution.{ExplainCommand, FileRelation, LogicalRDD, Queryable, QueryExecution, SQLExecution}
 import org.apache.spark.sql.execution.datasources.{CreateTableUsingAsSelect, LogicalRelation}
 import org.apache.spark.sql.execution.datasources.json.JacksonGenerator
-import org.apache.spark.sql.sources.HadoopFsRelation
+import org.apache.spark.sql.execution.python.EvaluatePython
 import org.apache.spark.sql.types._
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.util.Utils
-
 
 private[sql] object DataFrame {
   def apply(sqlContext: SQLContext, logicalPlan: LogicalPlan): DataFrame = {
@@ -476,6 +476,7 @@ class DataFrame private[sql](
           val rightCol = withPlan(joined.right).resolve(col).toAttribute.withNullability(true)
           Alias(Coalesce(Seq(leftCol, rightCol)), col)()
         }
+      case NaturalJoin(_) => sys.error("NaturalJoin with using clause is not supported.")
     }
     // The nullability of output of joined could be different than original column,
     // so we can only compare them by exprId
@@ -670,7 +671,7 @@ class DataFrame private[sql](
    * @since 1.3.0
    */
   def as(alias: String): DataFrame = withPlan {
-    Subquery(alias, logicalPlan)
+    SubqueryAlias(alias, logicalPlan)
   }
 
   /**
@@ -737,7 +738,7 @@ class DataFrame private[sql](
   @scala.annotation.varargs
   def selectExpr(exprs: String*): DataFrame = {
     select(exprs.map { expr =>
-      Column(SqlParser.parseExpression(expr))
+      Column(sqlContext.sqlParser.parseExpression(expr))
     }: _*)
   }
 
@@ -764,7 +765,7 @@ class DataFrame private[sql](
    * @since 1.3.0
    */
   def filter(conditionExpr: String): DataFrame = {
-    filter(Column(SqlParser.parseExpression(conditionExpr)))
+    filter(Column(sqlContext.sqlParser.parseExpression(conditionExpr)))
   }
 
   /**
@@ -788,7 +789,7 @@ class DataFrame private[sql](
    * @since 1.5.0
    */
   def where(conditionExpr: String): DataFrame = {
-    filter(Column(SqlParser.parseExpression(conditionExpr)))
+    filter(Column(sqlContext.sqlParser.parseExpression(conditionExpr)))
   }
 
   /**
@@ -1005,7 +1006,9 @@ class DataFrame private[sql](
    * @since 1.3.0
    */
   def unionAll(other: DataFrame): DataFrame = withPlan {
-    Union(logicalPlan, other.logicalPlan)
+    // This breaks caching, but it's usually ok because it addresses a very specific use case:
+    // using union to union many files or partitions.
+    CombineUnions(Union(logicalPlan, other.logicalPlan))
   }
 
   /**
@@ -1357,7 +1360,8 @@ class DataFrame private[sql](
       "min" -> ((child: Expression) => Min(child).toAggregateExpression()),
       "max" -> ((child: Expression) => Max(child).toAggregateExpression()))
 
-    val outputCols = (if (cols.isEmpty) numericColumns.map(_.prettyString) else cols).toList
+    val outputCols =
+      (if (cols.isEmpty) numericColumns.map(usePrettyExpression(_).sql) else cols).toList
 
     val ret: Seq[Row] = if (outputCols.nonEmpty) {
       val aggExprs = statistics.flatMap { case (_, colToAgg) =>
@@ -1383,6 +1387,10 @@ class DataFrame private[sql](
 
   /**
    * Returns the first `n` rows.
+   *
+   * @note this method should only be used if the resulting array is expected to be small, as
+   * all the data is loaded into the driver's memory.
+   *
    * @group action
    * @since 1.3.0
    */
@@ -1682,7 +1690,7 @@ class DataFrame private[sql](
 
   /**
    * :: Experimental ::
-   * Interface for saving the content of the [[DataFrame]] out into external storage.
+   * Interface for saving the content of the [[DataFrame]] out into external storage or streams.
    *
    * @group output
    * @since 1.4.0
@@ -1770,7 +1778,7 @@ class DataFrame private[sql](
   private def withCallback[T](name: String, df: DataFrame)(action: DataFrame => T) = {
     try {
       df.queryExecution.executedPlan.foreach { plan =>
-        plan.metrics.valuesIterator.foreach(_.reset())
+        plan.resetMetrics()
       }
       val start = System.nanoTime()
       val result = action(df)

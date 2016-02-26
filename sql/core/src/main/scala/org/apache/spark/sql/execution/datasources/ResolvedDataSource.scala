@@ -29,10 +29,10 @@ import org.apache.hadoop.util.StringUtils
 import org.apache.spark.Logging
 import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.sql.{AnalysisException, DataFrame, SaveMode, SQLContext}
+import org.apache.spark.sql.execution.streaming.{Sink, Source}
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.types.{CalendarIntervalType, StructType}
 import org.apache.spark.util.Utils
-
 
 case class ResolvedDataSource(provider: Class[_], relation: BaseRelation)
 
@@ -92,11 +92,42 @@ object ResolvedDataSource extends Logging {
     }
   }
 
+  def createSource(
+      sqlContext: SQLContext,
+      userSpecifiedSchema: Option[StructType],
+      providerName: String,
+      options: Map[String, String]): Source = {
+    val provider = lookupDataSource(providerName).newInstance() match {
+      case s: StreamSourceProvider => s
+      case _ =>
+        throw new UnsupportedOperationException(
+          s"Data source $providerName does not support streamed reading")
+    }
+
+    provider.createSource(sqlContext, userSpecifiedSchema, providerName, options)
+  }
+
+  def createSink(
+      sqlContext: SQLContext,
+      providerName: String,
+      options: Map[String, String],
+      partitionColumns: Seq[String]): Sink = {
+    val provider = lookupDataSource(providerName).newInstance() match {
+      case s: StreamSinkProvider => s
+      case _ =>
+        throw new UnsupportedOperationException(
+          s"Data source $providerName does not support streamed writing")
+    }
+
+    provider.createSink(sqlContext, options, partitionColumns)
+  }
+
   /** Create a [[ResolvedDataSource]] for reading data in. */
   def apply(
       sqlContext: SQLContext,
       userSpecifiedSchema: Option[StructType],
       partitionColumns: Array[String],
+      bucketSpec: Option[BucketSpec],
       provider: String,
       options: Map[String, String]): ResolvedDataSource = {
     val clazz: Class[_] = lookupDataSource(provider)
@@ -125,7 +156,9 @@ object ResolvedDataSource extends Logging {
             }
             caseInsensitiveOptions.get("paths")
               .map(_.split("(?<!\\\\),").map(StringUtils.unEscapeString(_, '\\', ',')))
-              .getOrElse(Array(caseInsensitiveOptions("path")))
+              .getOrElse(Array(caseInsensitiveOptions.getOrElse("path", {
+                throw new IllegalArgumentException("'path' is not specified")
+              })))
               .flatMap{ pathString =>
                 val hdfsPath = new Path(pathString)
                 val fs = hdfsPath.getFileSystem(sqlContext.sparkContext.hadoopConfiguration)
@@ -142,6 +175,7 @@ object ResolvedDataSource extends Logging {
             paths,
             Some(dataSchema),
             maybePartitionsSchema,
+            bucketSpec,
             caseInsensitiveOptions)
         case dataSource: org.apache.spark.sql.sources.RelationProvider =>
           throw new AnalysisException(s"$className does not allow user-specified schemas.")
@@ -165,7 +199,9 @@ object ResolvedDataSource extends Logging {
             }
             caseInsensitiveOptions.get("paths")
               .map(_.split("(?<!\\\\),").map(StringUtils.unEscapeString(_, '\\', ',')))
-              .getOrElse(Array(caseInsensitiveOptions("path")))
+              .getOrElse(Array(caseInsensitiveOptions.getOrElse("path", {
+                throw new IllegalArgumentException("'path' is not specified")
+              })))
               .flatMap{ pathString =>
                 val hdfsPath = new Path(pathString)
                 val fs = hdfsPath.getFileSystem(sqlContext.sparkContext.hadoopConfiguration)
@@ -173,7 +209,7 @@ object ResolvedDataSource extends Logging {
                 SparkHadoopUtil.get.globPathIfNecessary(qualified).map(_.toString)
               }
           }
-          dataSource.createRelation(sqlContext, paths, None, None, caseInsensitiveOptions)
+          dataSource.createRelation(sqlContext, paths, None, None, None, caseInsensitiveOptions)
         case dataSource: org.apache.spark.sql.sources.SchemaRelationProvider =>
           throw new AnalysisException(
             s"A schema needs to be specified when using $className.")
@@ -228,7 +264,9 @@ object ResolvedDataSource extends Logging {
         //  3. It's OK that the output path doesn't exist yet;
         val caseInsensitiveOptions = new CaseInsensitiveMap(options)
         val outputPath = {
-          val path = new Path(caseInsensitiveOptions("path"))
+          val path = new Path(caseInsensitiveOptions.getOrElse("path", {
+            throw new IllegalArgumentException("'path' is not specified")
+          }))
           val fs = path.getFileSystem(sqlContext.sparkContext.hadoopConfiguration)
           path.makeQualified(fs.getUri, fs.getWorkingDirectory)
         }

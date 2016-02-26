@@ -150,7 +150,11 @@ abstract class HiveComparisonTest
        """.stripMargin
     })
 
-    super.afterAll()
+    try {
+      TestHive.reset()
+    } finally {
+      super.afterAll()
+    }
   }
 
   protected def prepareAnswer(
@@ -408,21 +412,22 @@ abstract class HiveComparisonTest
                 originalQuery
               } else {
                 numTotalQueries += 1
-                new SQLBuilder(originalQuery.analyzed, TestHive).toSQL.map { sql =>
+                try {
+                  val sql = new SQLBuilder(originalQuery.analyzed, TestHive).toSQL
                   numConvertibleQueries += 1
                   logInfo(
                     s"""
-                       |### Running SQL generation round-trip test {{{
-                       |${originalQuery.analyzed.treeString}
-                       |Original SQL:
-                       |$queryString
-                       |
-                     |Generated SQL:
-                       |$sql
-                       |}}}
+                      |### Running SQL generation round-trip test {{{
+                      |${originalQuery.analyzed.treeString}
+                      |Original SQL:
+                      |$queryString
+                      |
+                      |Generated SQL:
+                      |$sql
+                      |}}}
                    """.stripMargin.trim)
                   new TestHive.QueryExecution(sql)
-                }.getOrElse {
+                } catch { case NonFatal(e) =>
                   logInfo(
                     s"""
                        |### Cannot convert the following logical plan back to SQL {{{
@@ -485,7 +490,7 @@ abstract class HiveComparisonTest
                 val executions = queryList.map(new TestHive.QueryExecution(_))
                 executions.foreach(_.toRdd)
                 val tablesGenerated = queryList.zip(executions).flatMap {
-                  case (q, e) => e.executedPlan.collect {
+                  case (q, e) => e.sparkPlan.collect {
                     case i: InsertIntoHiveTable if tablesRead contains i.table.tableName =>
                       (q, e, i)
                   }
