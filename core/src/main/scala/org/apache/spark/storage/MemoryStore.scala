@@ -95,7 +95,7 @@ private[spark] class MemoryStore(blockManager: BlockManager, memoryManager: Memo
       val values = blockManager.dataDeserialize(blockId, bytes)
       putIterator(blockId, values, level, returnValues = true)
     } else {
-      tryToPut(blockId, bytes, bytes.limit, deserialized = false)
+      tryToPut(blockId, () => bytes, bytes.limit, deserialized = false)
       PutResult(bytes.limit(), Right(bytes.duplicate()))
     }
   }
@@ -146,32 +146,28 @@ private[spark] class MemoryStore(blockManager: BlockManager, memoryManager: Memo
       level: StorageLevel,
       returnValues: Boolean,
       allowPersistToDisk: Boolean): PutResult = {
+    val droppedBlocks = new ArrayBuffer[(BlockId, BlockStatus)]
     val unrolledValues = unrollSafely(blockId, values)
     unrolledValues match {
       case Left(arrayValues) =>
         // Values are fully unrolled in memory, so store them as an array
-        val res = putArray(blockId, arrayValues, level, returnValues)
-        droppedBlocks ++= res.droppedBlocks
-        PutResult(res.size, res.data, droppedBlocks)
         if (level.deserialized) {
           val sizeEstimate = SizeEstimator.estimate(arrayValues.asInstanceOf[AnyRef])
-          tryToPut(blockId, () => arrayValues, sizeEstimate, deserialized = true, droppedBlocks)
+          tryToPut(blockId, () => arrayValues, sizeEstimate, deserialized = true)
           PutResult(sizeEstimate, Left(arrayValues.iterator), droppedBlocks)
         } else {
           val bytes = blockManager.dataSerialize(blockId, arrayValues.iterator)
-          tryToPut(blockId, () => bytes, bytes.limit, deserialized = false, droppedBlocks)
+          tryToPut(blockId, () => bytes, bytes.limit, deserialized = false)
           PutResult(bytes.limit(), Right(bytes.duplicate()), droppedBlocks)
         }
-        val res = putArray(blockId, arrayValues, level, returnValues)
-        PutResult(res.size, res.data)
       case Right(iteratorValues) =>
         // Not enough space to unroll this block; drop to disk if applicable
         if (level.useDisk && allowPersistToDisk) {
           logWarning(s"Persisting block $blockId to disk instead.")
           val res = blockManager.diskStore.putIterator(blockId, iteratorValues, level, returnValues)
-          PutResult(res.size, res.data)
+          PutResult(res.size, res.data, droppedBlocks)
         } else {
-          PutResult(0, Left(iteratorValues))
+          PutResult(0, Left(iteratorValues), droppedBlocks)
         }
     }
   }
@@ -451,6 +447,7 @@ private[spark] class MemoryStore(blockManager: BlockManager, memoryManager: Memo
 
   /**
    * Reserve memory for unrolling the given block for this task.
+   *
    * @return whether the request is granted.
    */
   def reserveUnrollMemoryForThisTask(blockId: BlockId, memory: Long): Boolean = {
