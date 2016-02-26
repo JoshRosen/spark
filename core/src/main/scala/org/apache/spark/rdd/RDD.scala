@@ -37,7 +37,7 @@ import org.apache.spark.partial.BoundedDouble
 import org.apache.spark.partial.CountEvaluator
 import org.apache.spark.partial.GroupedCountEvaluator
 import org.apache.spark.partial.PartialResult
-import org.apache.spark.storage.StorageLevel
+import org.apache.spark.storage.{BlockException, RDDBlockId, StorageLevel}
 import org.apache.spark.util.{BoundedPriorityQueue, Utils}
 import org.apache.spark.util.collection.OpenHashMap
 import org.apache.spark.util.random.{BernoulliCellSampler, BernoulliSampler, PoissonSampler,
@@ -272,7 +272,7 @@ abstract class RDD[T: ClassTag](
    */
   final def iterator(split: Partition, context: TaskContext): Iterator[T] = {
     if (storageLevel != StorageLevel.NONE) {
-      SparkEnv.get.cacheManager.getOrCompute(this, split, context, storageLevel)
+      getOrCompute(split, context)
     } else {
       computeOrReadCheckpoint(split, context)
     }
@@ -311,6 +311,40 @@ abstract class RDD[T: ClassTag](
       firstParent[T].iterator(split, context)
     } else {
       compute(split, context)
+    }
+  }
+
+  /**
+   * Gets or computes an RDD partition. Used by RDD.iterator() when an RDD is cached.
+   */
+  private[spark] def getOrCompute(partition: Partition, context: TaskContext): Iterator[T] = {
+    val blockId = RDDBlockId(id, partition.index)
+    val blockManager = SparkEnv.get.blockManager
+    blockManager.get(blockId) match {
+      case Some(blockResult) =>
+        // Partition is already materialized, so just return its values
+        val existingMetrics = context.taskMetrics().registerInputMetrics(blockResult.readMethod)
+        existingMetrics.incBytesReadInternal(blockResult.bytes)
+
+        val iter = blockResult.data.asInstanceOf[Iterator[T]]
+
+        new InterruptibleIterator[T](context, iter) {
+          override def next(): T = {
+            existingMetrics.incRecordsReadInternal(1)
+            delegate.next()
+          }
+        }
+      case None =>
+        logInfo(s"Partition $blockId not found, computing it")
+        blockManager.putIterator(blockId, computeOrReadCheckpoint(partition, context), storageLevel)
+        blockManager.get(blockId) match {
+          case Some(v) =>
+            new InterruptibleIterator(context, v.data.asInstanceOf[Iterator[T]])
+          case None =>
+            val msg = s"Block manager failed to return cached value for $blockId!"
+            logError(msg)
+            throw new BlockException(blockId, msg)
+        }
     }
   }
 
