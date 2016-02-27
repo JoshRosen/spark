@@ -319,32 +319,26 @@ abstract class RDD[T: ClassTag](
    */
   private[spark] def getOrCompute(partition: Partition, context: TaskContext): Iterator[T] = {
     val blockId = RDDBlockId(id, partition.index)
-    val blockManager = SparkEnv.get.blockManager
-    blockManager.get(blockId) match {
-      case Some(blockResult) =>
-        // Partition is already materialized, so just return its values
-        val existingMetrics = context.taskMetrics().registerInputMetrics(blockResult.readMethod)
-        existingMetrics.incBytesReadInternal(blockResult.bytes)
+    var readCachedBlock = false
+    val blockResult = SparkEnv.get.blockManager.getOrElseUpdate(blockId, storageLevel, () => {
+      readCachedBlock = true
+      computeOrReadCheckpoint(partition, context)
+    })
 
-        val iter = blockResult.data.asInstanceOf[Iterator[T]]
+    if (readCachedBlock) {
+      val existingMetrics = context.taskMetrics().registerInputMetrics(blockResult.readMethod)
+      existingMetrics.incBytesReadInternal(blockResult.bytes)
 
-        new InterruptibleIterator[T](context, iter) {
-          override def next(): T = {
-            existingMetrics.incRecordsReadInternal(1)
-            delegate.next()
-          }
+      val iter = blockResult.data.asInstanceOf[Iterator[T]]
+
+      new InterruptibleIterator[T](context, iter) {
+        override def next(): T = {
+          existingMetrics.incRecordsReadInternal(1)
+          delegate.next()
         }
-      case None =>
-        logInfo(s"Partition $blockId not found, computing it")
-        blockManager.putIterator(blockId, computeOrReadCheckpoint(partition, context), storageLevel)
-        blockManager.get(blockId) match {
-          case Some(v) =>
-            new InterruptibleIterator(context, v.data.asInstanceOf[Iterator[T]])
-          case None =>
-            val msg = s"Block manager failed to return cached value for $blockId!"
-            logError(msg)
-            throw new BlockException(blockId, msg)
-        }
+      }
+    } else {
+      new InterruptibleIterator(context, blockResult.data.asInstanceOf[Iterator[T]])
     }
   }
 
@@ -483,7 +477,6 @@ abstract class RDD[T: ClassTag](
    *
    * @param weights weights for splits, will be normalized if they don't sum to 1
    * @param seed random seed
-   *
    * @return split RDDs in an array
    */
   def randomSplit(
@@ -499,6 +492,7 @@ abstract class RDD[T: ClassTag](
   /**
    * Internal method exposed for Random Splits in DataFrames. Samples an RDD given a probability
    * range.
+   *
    * @param lb lower bound to use for the Bernoulli sampler
    * @param ub upper bound to use for the Bernoulli sampler
    * @param seed the seed for the Random number generator
@@ -517,7 +511,6 @@ abstract class RDD[T: ClassTag](
    *
    * @note this method should only be used if the resulting array is expected to be small, as
    * all the data is loaded into the driver's memory.
-   *
    * @param withReplacement whether sampling is done with replacement
    * @param num size of the returned sample
    * @param seed seed for the random number generator
@@ -1244,7 +1237,6 @@ abstract class RDD[T: ClassTag](
    *
    * @note this method should only be used if the resulting array is expected to be small, as
    * all the data is loaded into the driver's memory.
-   *
    * @note due to complications in the internal implementation, this method will raise
    * an exception if called on an RDD of `Nothing` or `Null`.
    */
@@ -1308,7 +1300,6 @@ abstract class RDD[T: ClassTag](
    *
    * @note this method should only be used if the resulting array is expected to be small, as
    * all the data is loaded into the driver's memory.
-   *
    * @param num k, the number of top elements to return
    * @param ord the implicit ordering for T
    * @return an array of top elements
@@ -1331,7 +1322,6 @@ abstract class RDD[T: ClassTag](
    *
    * @note this method should only be used if the resulting array is expected to be small, as
    * all the data is loaded into the driver's memory.
-   *
    * @param num k, the number of elements to return
    * @param ord the implicit ordering for T
    * @return an array of top elements
@@ -1359,6 +1349,7 @@ abstract class RDD[T: ClassTag](
 
   /**
    * Returns the max of this RDD as defined by the implicit Ordering[T].
+   *
    * @return the maximum element of the RDD
    * */
   def max()(implicit ord: Ordering[T]): T = withScope {
@@ -1367,6 +1358,7 @@ abstract class RDD[T: ClassTag](
 
   /**
    * Returns the min of this RDD as defined by the implicit Ordering[T].
+   *
    * @return the minimum element of the RDD
    * */
   def min()(implicit ord: Ordering[T]): T = withScope {

@@ -44,7 +44,7 @@ import org.apache.spark.util._
 
 private[spark] sealed trait BlockValues
 private[spark] case class ByteBufferValues(buffer: ByteBuffer) extends BlockValues
-private[spark] case class IteratorValues(iterator: Iterator[Any]) extends BlockValues
+private[spark] case class IteratorValues(iterator: () => Iterator[Any]) extends BlockValues
 
 /* Class for returning a fetched block and associated metrics. */
 private[spark] class BlockResult(
@@ -646,13 +646,31 @@ private[spark] class BlockManager(
     blockInfoManager.releaseAllLocksForTask(taskAttemptId)
   }
 
+  // caller has readlock
+  def getOrElseUpdate(
+      blockId: BlockId,
+      level: StorageLevel,
+      values: () => Iterator[Any]): BlockResult = {
+    // no lock
+    doPut(blockId, IteratorValues(values), level, holdReadLocks = true)
+    // 1 read
+    val res = get(blockId).getOrElse {
+      releaseLock(blockId)
+      throw new Exception()
+    }
+    // 2 reads
+    releaseLock(blockId)
+    // 1 read
+    res
+  }
+
   /**
    * @return true if the block was stored or false if the block was already stored or an
    *         error occurred.
    */
   def putIterator(
       blockId: BlockId,
-      values: Iterator[Any],
+      values: () => Iterator[Any],
       level: StorageLevel,
       tellMaster: Boolean = true,
       effectiveStorageLevel: Option[StorageLevel] = None): Boolean = {
@@ -788,7 +806,7 @@ private[spark] class BlockManager(
         // Actually put the values
         val result = data match {
           case IteratorValues(iterator) =>
-            blockStore.putIterator(blockId, iterator, putLevel, returnValues)
+            blockStore.putIterator(blockId, iterator(), putLevel, returnValues)
           case ByteBufferValues(bytes) =>
             bytes.rewind()
             blockStore.putBytes(blockId, bytes, putLevel)
