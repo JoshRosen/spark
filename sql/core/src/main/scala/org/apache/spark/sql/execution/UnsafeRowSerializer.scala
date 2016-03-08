@@ -55,7 +55,7 @@ private class UnsafeRowSerializerInstance(numFields: Int) extends SerializerInst
       new DataOutputStream(new BufferedOutputStream(out))
 
     override def writeObject[T: ClassTag](value: T): SerializationStream = {
-      val row = value.asInstanceOf[UnsafeRow]
+      val row = value.asInstanceOf[Product2[Int, UnsafeRow]]._2
 
       dOut.writeInt(row.getSizeInBytes)
       row.writeToStream(dOut, writeBuffer)

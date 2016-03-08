@@ -173,6 +173,7 @@ private[spark] class DiskBlockObjectWriter(
     }
   }
 
+  // only used in tests TODO(josh): remove
   def write(key: Any, value: Any): Unit = {
     write((key, value))
   }

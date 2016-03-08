@@ -158,12 +158,12 @@ class ShuffledRowRDD(
     // The range of pre-shuffle partitions that we are fetching at here is
     // [startPreShufflePartitionIndex, endPreShufflePartitionIndex - 1].
     val reader =
-      SparkEnv.get.shuffleManager.getReader(
+      SparkEnv.get.shuffleManager.getReader[InternalRow](
         dependency.shuffleHandle,
         shuffledRowPartition.startPreShufflePartitionIndex,
         shuffledRowPartition.endPreShufflePartitionIndex,
         context)
-    reader.read().asInstanceOf[Iterator[Product2[Int, InternalRow]]].map(_._2)
+    reader.read()
   }
 
   override def clearDependencies() {
