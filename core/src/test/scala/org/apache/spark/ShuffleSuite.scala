@@ -371,7 +371,7 @@ abstract class ShuffleSuite extends SparkFunSuite with Matchers with LocalSparkC
       mapTrackerMaster.registerMapOutputs(0, Array(mapStatus))
     }
 
-    val reader = manager.getReader[Int, Int](shuffleHandle, 0, 1,
+    val reader = manager.getReader[(Int, Int)](shuffleHandle, 0, 1,
       new TaskContextImpl(1, 0, 2L, 0, taskMemoryManager, metricsSystem,
         InternalAccumulator.create(sc)))
     val readData = reader.read().toIndexedSeq

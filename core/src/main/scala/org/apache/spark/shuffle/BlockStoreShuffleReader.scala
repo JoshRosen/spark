@@ -19,28 +19,26 @@ package org.apache.spark.shuffle
 
 import org.apache.spark._
 import org.apache.spark.internal.Logging
-import org.apache.spark.serializer.Serializer
 import org.apache.spark.storage.{BlockManager, ShuffleBlockFetcherIterator}
 import org.apache.spark.util.CompletionIterator
-import org.apache.spark.util.collection.ExternalSorter
 
 /**
  * Fetches and reads the partitions in range [startPartition, endPartition) from a shuffle by
  * requesting them from other nodes' block stores.
  */
-private[spark] class BlockStoreShuffleReader[K, C](
-    handle: BaseShuffleHandle[K, _, C],
+private[spark] class BlockStoreShuffleReader[T](
+    handle: BaseShuffleHandle[_, _, _],
     startPartition: Int,
     endPartition: Int,
     context: TaskContext,
     blockManager: BlockManager = SparkEnv.get.blockManager,
     mapOutputTracker: MapOutputTracker = SparkEnv.get.mapOutputTracker)
-  extends ShuffleReader[K, C] with Logging {
+  extends ShuffleReader[T] with Logging {
 
   private val dep = handle.dependency
 
   /** Read the combined key-values for this reduce task */
-  override def read(): Iterator[Product2[K, C]] = {
+  override def read(): Iterator[T] = {
     val blockFetcherItr = new ShuffleBlockFetcherIterator(
       context,
       blockManager.shuffleClient,
@@ -57,18 +55,17 @@ private[spark] class BlockStoreShuffleReader[K, C](
 
     val serializerInstance = dep.serializer.newInstance()
 
-    // Create a key/value iterator for each stream
+    // Create an iterator for each stream
     val recordIter = wrappedStreams.flatMap { wrappedStream =>
-      // Note: the asKeyValueIterator below wraps a key/value iterator inside of a
+      // Note: the asIterator below wraps a key/value iterator inside of a
       // NextIterator. The NextIterator makes sure that close() is called on the
       // underlying InputStream when all records have been read.
-      serializerInstance.deserializeStream(wrappedStream)
-        .asIterator.asInstanceOf[Iterator[(Any, Any)]]
+      serializerInstance.deserializeStream(wrappedStream).asIterator.asInstanceOf[Iterator[T]]
     }
 
     // Update the context task metrics for each record read.
     val readMetrics = context.taskMetrics.registerTempShuffleReadMetrics()
-    val metricIter = CompletionIterator[(Any, Any), Iterator[(Any, Any)]](
+    val metricIter = CompletionIterator[T, Iterator[T]](
       recordIter.map(record => {
         readMetrics.incRecordsRead(1)
         record
@@ -76,39 +73,6 @@ private[spark] class BlockStoreShuffleReader[K, C](
       context.taskMetrics().mergeShuffleReadMetrics())
 
     // An interruptible iterator must be used here in order to support task cancellation
-    val interruptibleIter = new InterruptibleIterator[(Any, Any)](context, metricIter)
-
-    val aggregatedIter: Iterator[Product2[K, C]] = if (dep.aggregator.isDefined) {
-      if (dep.mapSideCombine) {
-        // We are reading values that are already combined
-        val combinedKeyValuesIterator = interruptibleIter.asInstanceOf[Iterator[(K, C)]]
-        dep.aggregator.get.combineCombinersByKey(combinedKeyValuesIterator, context)
-      } else {
-        // We don't know the value type, but also don't care -- the dependency *should*
-        // have made sure its compatible w/ this aggregator, which will convert the value
-        // type to the combined type C
-        val keyValuesIterator = interruptibleIter.asInstanceOf[Iterator[(K, Nothing)]]
-        dep.aggregator.get.combineValuesByKey(keyValuesIterator, context)
-      }
-    } else {
-      require(!dep.mapSideCombine, "Map-side combine without Aggregator specified!")
-      interruptibleIter.asInstanceOf[Iterator[Product2[K, C]]]
-    }
-
-    // Sort the output if there is a sort ordering defined.
-    dep.keyOrdering match {
-      case Some(keyOrd: Ordering[K]) =>
-        // Create an ExternalSorter to sort the data. Note that if spark.shuffle.spill is disabled,
-        // the ExternalSorter won't spill to disk.
-        val sorter =
-          new ExternalSorter[K, C, C](context, ordering = Some(keyOrd), serializer = dep.serializer)
-        sorter.insertAll(aggregatedIter)
-        context.taskMetrics().incMemoryBytesSpilled(sorter.memoryBytesSpilled)
-        context.taskMetrics().incDiskBytesSpilled(sorter.diskBytesSpilled)
-        context.taskMetrics().incPeakExecutionMemory(sorter.peakMemoryUsedBytes)
-        CompletionIterator[Product2[K, C], Iterator[Product2[K, C]]](sorter.iterator, sorter.stop())
-      case None =>
-        aggregatedIter
-    }
+    new InterruptibleIterator[T](context, metricIter)
   }
 }

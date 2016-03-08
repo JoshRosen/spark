@@ -22,6 +22,8 @@ import scala.reflect.ClassTag
 import org.apache.spark._
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.serializer.{KeyValueSerializer, Serializer}
+import org.apache.spark.util.CompletionIterator
+import org.apache.spark.util.collection.ExternalSorter
 
 private[spark] class ShuffledRDDPartition(val idx: Int) extends Partition {
   override val index: Int = idx
@@ -31,6 +33,7 @@ private[spark] class ShuffledRDDPartition(val idx: Int) extends Partition {
 /**
  * :: DeveloperApi ::
  * The resulting RDD from a shuffle (e.g. repartitioning of data).
+ *
  * @param prev the parent RDD.
  * @param part the partitioner used to partition the RDD
  * @tparam K the key class.
@@ -104,9 +107,43 @@ class ShuffledRDD[K: ClassTag, V: ClassTag, C: ClassTag](
 
   override def compute(split: Partition, context: TaskContext): Iterator[(K, C)] = {
     val dep = dependencies.head.asInstanceOf[ShuffleDependency[K, V, C]]
-    SparkEnv.get.shuffleManager.getReader(dep.shuffleHandle, split.index, split.index + 1, context)
+    val interruptibleIter = SparkEnv.get.shuffleManager
+      .getReader(dep.shuffleHandle, split.index, split.index + 1, context)
       .read()
-      .asInstanceOf[Iterator[(K, C)]]
+      .asInstanceOf[Iterator[(Any, Any)]]
+    val aggregatedIter: Iterator[Product2[K, C]] = if (dep.aggregator.isDefined) {
+      if (dep.mapSideCombine) {
+        // We are reading values that are already combined
+        val combinedKeyValuesIterator = interruptibleIter.asInstanceOf[Iterator[(K, C)]]
+        dep.aggregator.get.combineCombinersByKey(combinedKeyValuesIterator, context)
+      } else {
+        // We don't know the value type, but also don't care -- the dependency *should*
+        // have made sure its compatible w/ this aggregator, which will convert the value
+        // type to the combined type C
+        val keyValuesIterator = interruptibleIter.asInstanceOf[Iterator[(K, Nothing)]]
+        dep.aggregator.get.combineValuesByKey(keyValuesIterator, context)
+      }
+    } else {
+      require(!dep.mapSideCombine, "Map-side combine without Aggregator specified!")
+      interruptibleIter.asInstanceOf[Iterator[Product2[K, C]]]
+    }
+
+    // Sort the output if there is a sort ordering defined.
+    val iterToReturn = dep.keyOrdering match {
+      case Some(keyOrd: Ordering[K]) =>
+        // Create an ExternalSorter to sort the data. Note that if spark.shuffle.spill is disabled,
+        // the ExternalSorter won't spill to disk.
+        val sorter =
+          new ExternalSorter[K, C, C](context, ordering = Some(keyOrd), serializer = dep.serializer)
+        sorter.insertAll(aggregatedIter)
+        context.taskMetrics().incMemoryBytesSpilled(sorter.memoryBytesSpilled)
+        context.taskMetrics().incDiskBytesSpilled(sorter.diskBytesSpilled)
+        context.taskMetrics().incPeakExecutionMemory(sorter.peakMemoryUsedBytes)
+        CompletionIterator[Product2[K, C], Iterator[Product2[K, C]]](sorter.iterator, sorter.stop())
+      case None =>
+        aggregatedIter
+    }
+    iterToReturn.asInstanceOf[Iterator[(K, C)]]
   }
 
   override def clearDependencies() {
