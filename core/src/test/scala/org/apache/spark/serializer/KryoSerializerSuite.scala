@@ -461,7 +461,7 @@ class KryoSerializerAutoResetDisabledSuite extends SparkFunSuite with SharedSpar
       baos.toByteArray
     }
     val deserializationStream = serInstance.deserializeStream(new ByteArrayInputStream(worldWorld))
-    assert(deserializationStream.readValue[Any]() === world)
+    assert(deserializationStream.readObject[Any]() === world)
     deserializationStream.close()
     assert(serInstance.deserialize[Any](helloHello) === (hello, hello))
   }

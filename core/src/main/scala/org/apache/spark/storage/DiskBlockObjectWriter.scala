@@ -173,16 +173,19 @@ private[spark] class DiskBlockObjectWriter(
     }
   }
 
+  def write(key: Any, value: Any): Unit = {
+    write((key, value))
+  }
+
   /**
-   * Writes a key-value pair.
+   * Writes an object.
    */
-  def write(key: Any, value: Any) {
+  def write(obj: Any) {
     if (!initialized) {
       open()
     }
 
-    objOut.writeKey(key)
-    objOut.writeValue(value)
+    objOut.writeObject(obj)
     recordWritten()
   }
 

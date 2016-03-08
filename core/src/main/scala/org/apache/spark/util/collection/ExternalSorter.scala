@@ -535,8 +535,7 @@ private[spark] class ExternalSorter[K, V, C](
       if (finished || deserializeStream == null) {
         return null
       }
-      val k = deserializeStream.readKey().asInstanceOf[K]
-      val c = deserializeStream.readValue().asInstanceOf[C]
+      val rec = deserializeStream.readObject().asInstanceOf[(K, C)]
       lastPartitionId = partitionId
       // Start reading the next batch if we're done with this one
       indexInBatch += 1
@@ -554,7 +553,7 @@ private[spark] class ExternalSorter[K, V, C](
           deserializeStream.close()
         }
       }
-      (k, c)
+      rec
     }
 
     var nextPartitionToRead = 0
@@ -671,7 +670,7 @@ private[spark] class ExternalSorter[K, V, C](
           val writer = blockManager.getDiskWriter(
             blockId, outputFile, serInstance, fileBufferSize, writeMetrics)
           for (elem <- elements) {
-            writer.write(elem._1, elem._2)
+            writer.write(elem)
           }
           writer.commitAndClose()
           val segment = writer.fileSegment()

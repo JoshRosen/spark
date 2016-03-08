@@ -23,6 +23,7 @@ import java.nio.{ByteBuffer, MappedByteBuffer}
 import scala.collection.mutable.{ArrayBuffer, HashMap}
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration._
+import scala.reflect.ClassTag
 import scala.util.Random
 import scala.util.control.NonFatal
 
@@ -1301,12 +1302,14 @@ private[spark] class BlockManager(
    * Deserializes a InputStream into an iterator of values and disposes of it when the end of
    * the iterator is reached.
    */
-  def dataDeserializeStream(blockId: BlockId, inputStream: InputStream): Iterator[Any] = {
+  def dataDeserializeStream[T: ClassTag](
+      blockId: BlockId,
+      inputStream: InputStream): Iterator[T] = {
     val stream = new BufferedInputStream(inputStream)
     defaultSerializer
       .newInstance()
       .deserializeStream(wrapForCompression(blockId, stream))
-      .asIterator
+      .asIterator[T]
   }
 
   def stop(): Unit = {

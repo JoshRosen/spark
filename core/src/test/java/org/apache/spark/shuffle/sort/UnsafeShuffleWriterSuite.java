@@ -23,6 +23,7 @@ import java.util.*;
 
 import scala.*;
 import scala.collection.Iterator;
+import scala.reflect.ClassTag$;
 import scala.runtime.AbstractFunction1;
 
 import com.google.common.collect.Iterators;

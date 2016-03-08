@@ -70,8 +70,7 @@ class UnsafeRowSerializerSuite extends SparkFunSuite with LocalSparkContext {
     val baos = new ByteArrayOutputStream()
     val serializerStream = serializer.serializeStream(baos)
     for (unsafeRow <- unsafeRows) {
-      serializerStream.writeKey(0)
-      serializerStream.writeValue(unsafeRow)
+      serializerStream.writeObject((0, unsafeRow))
     }
     serializerStream.close()
     val input = new ClosableByteArrayInputStream(baos.toByteArray)

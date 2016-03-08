@@ -475,9 +475,7 @@ class ExternalAppendOnlyMap[K, V, C](
      */
     private def readNextItem(): (K, C) = {
       try {
-        val k = deserializeStream.readKey().asInstanceOf[K]
-        val c = deserializeStream.readValue().asInstanceOf[C]
-        val item = (k, c)
+        val item = deserializeStream.readObject().asInstanceOf[(K, C)]
         objectsRead += 1
         if (objectsRead == serializerBatchSize) {
           objectsRead = 0

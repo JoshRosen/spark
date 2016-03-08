@@ -54,29 +54,12 @@ private class UnsafeRowSerializerInstance(numFields: Int) extends SerializerInst
     private[this] val dOut: DataOutputStream =
       new DataOutputStream(new BufferedOutputStream(out))
 
-    override def writeValue[T: ClassTag](value: T): SerializationStream = {
+    override def writeObject[T: ClassTag](value: T): SerializationStream = {
       val row = value.asInstanceOf[UnsafeRow]
 
       dOut.writeInt(row.getSizeInBytes)
       row.writeToStream(dOut, writeBuffer)
       this
-    }
-
-    override def writeKey[T: ClassTag](key: T): SerializationStream = {
-      // The key is only needed on the map side when computing partition ids. It does not need to
-      // be shuffled.
-      assert(null == key || key.isInstanceOf[Int])
-      this
-    }
-
-    override def writeAll[T: ClassTag](iter: Iterator[T]): SerializationStream = {
-      // This method is never called by shuffle code.
-      throw new UnsupportedOperationException
-    }
-
-    override def writeObject[T: ClassTag](t: T): SerializationStream = {
-      // This method is never called by shuffle code.
-      throw new UnsupportedOperationException
     }
 
     override def flush(): Unit = {
@@ -95,11 +78,10 @@ private class UnsafeRowSerializerInstance(numFields: Int) extends SerializerInst
       // 1024 is a default buffer size; this buffer will grow to accommodate larger rows
       private[this] var rowBuffer: Array[Byte] = new Array[Byte](1024)
       private[this] var row: UnsafeRow = new UnsafeRow(numFields)
-      private[this] var rowTuple: (Int, UnsafeRow) = (0, row)
       private[this] val EOF: Int = -1
 
-      override def asKeyValueIterator: Iterator[(Int, UnsafeRow)] = {
-        new Iterator[(Int, UnsafeRow)] {
+      override def asIterator[T: ClassTag]: Iterator[T] = {
+        new Iterator[T] {
 
           private[this] def readSize(): Int = try {
             dIn.readInt()
@@ -112,7 +94,7 @@ private class UnsafeRowSerializerInstance(numFields: Int) extends SerializerInst
           private[this] var rowSize: Int = readSize()
           override def hasNext: Boolean = rowSize != EOF
 
-          override def next(): (Int, UnsafeRow) = {
+          override def next(): T = {
             if (rowBuffer.length < rowSize) {
               rowBuffer = new Array[Byte](rowSize)
             }
@@ -121,32 +103,20 @@ private class UnsafeRowSerializerInstance(numFields: Int) extends SerializerInst
             rowSize = readSize()
             if (rowSize == EOF) { // We are returning the last row in this stream
               dIn.close()
-              val _rowTuple = rowTuple
+              val _row = row
               // Null these out so that the byte array can be garbage collected once the entire
               // iterator has been consumed
               row = null
               rowBuffer = null
-              rowTuple = null
-              _rowTuple
+              _row.asInstanceOf[T]
             } else {
-              rowTuple
+              row.asInstanceOf[T]
             }
           }
         }
       }
 
-      override def asIterator: Iterator[Any] = {
-        // This method is never called by shuffle code.
-        throw new UnsupportedOperationException
-      }
-
-      override def readKey[T: ClassTag](): T = {
-        // We skipped serialization of the key in writeKey(), so just return a dummy value since
-        // this is going to be discarded anyways.
-        null.asInstanceOf[T]
-      }
-
-      override def readValue[T: ClassTag](): T = {
+      override def readObject[T: ClassTag](): T = {
         val rowSize = dIn.readInt()
         if (rowBuffer.length < rowSize) {
           rowBuffer = new Array[Byte](rowSize)
@@ -154,11 +124,6 @@ private class UnsafeRowSerializerInstance(numFields: Int) extends SerializerInst
         ByteStreams.readFully(dIn, rowBuffer, 0, rowSize)
         row.pointTo(rowBuffer, Platform.BYTE_ARRAY_OFFSET, rowSize)
         row.asInstanceOf[T]
-      }
-
-      override def readObject[T: ClassTag](): T = {
-        // This method is never called by shuffle code.
-        throw new UnsupportedOperationException
       }
 
       override def close(): Unit = {

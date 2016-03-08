@@ -62,7 +62,8 @@ private[spark] class BlockStoreShuffleReader[K, C](
       // Note: the asKeyValueIterator below wraps a key/value iterator inside of a
       // NextIterator. The NextIterator makes sure that close() is called on the
       // underlying InputStream when all records have been read.
-      serializerInstance.deserializeStream(wrappedStream).asKeyValueIterator
+      serializerInstance.deserializeStream(wrappedStream)
+        .asIterator.asInstanceOf[Iterator[(Any, Any)]]
     }
 
     // Update the context task metrics for each record read.

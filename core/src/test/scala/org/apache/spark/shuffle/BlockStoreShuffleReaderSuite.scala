@@ -89,8 +89,7 @@ class BlockStoreShuffleReaderSuite extends SparkFunSuite with LocalSparkContext 
     val byteOutputStream = new ByteArrayOutputStream()
     val serializationStream = serializer.newInstance().serializeStream(byteOutputStream)
     (0 until keyValuePairsPerMap).foreach { i =>
-      serializationStream.writeKey(i)
-      serializationStream.writeValue(2*i)
+      serializationStream.writeObject((i, 2*i))
     }
 
     // Setup the mocked BlockManager to return RecordingManagedBuffers.

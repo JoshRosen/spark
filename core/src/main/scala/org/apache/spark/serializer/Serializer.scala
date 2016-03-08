@@ -127,16 +127,11 @@ abstract class SerializerInstance {
  */
 @DeveloperApi
 abstract class SerializationStream {
-  /** The most general-purpose method to write an object. */
   def writeObject[T: ClassTag](t: T): SerializationStream
-  /** Writes the object representing the key of a key-value pair. */
-  def writeKey[T: ClassTag](key: T): SerializationStream = writeObject(key)
-  /** Writes the object representing the value of a key-value pair. */
-  def writeValue[T: ClassTag](value: T): SerializationStream = writeObject(value)
   def flush(): Unit
   def close(): Unit
 
-  def writeAll[T: ClassTag](iter: Iterator[T]): SerializationStream = {
+  final def writeAll[T: ClassTag](iter: Iterator[T]): SerializationStream = {
     while (iter.hasNext) {
       writeObject(iter.next())
     }
@@ -151,26 +146,21 @@ abstract class SerializationStream {
  */
 @DeveloperApi
 abstract class DeserializationStream {
-  /** The most general-purpose method to read an object. */
   def readObject[T: ClassTag](): T
-  /** Reads the object representing the key of a key-value pair. */
-  def readKey[T: ClassTag](): T = readObject[T]()
-  /** Reads the object representing the value of a key-value pair. */
-  def readValue[T: ClassTag](): T = readObject[T]()
   def close(): Unit
 
   /**
    * Read the elements of this stream through an iterator. This can only be called once, as
    * reading each element will consume data from the input source.
    */
-  def asIterator: Iterator[Any] = new NextIterator[Any] {
+  def asIterator[T: ClassTag]: Iterator[T] = new NextIterator[T] {
     override protected def getNext() = {
       try {
-        readObject[Any]()
+        readObject[T]()
       } catch {
         case eof: EOFException =>
           finished = true
-          null
+          null.asInstanceOf[T]
       }
     }
 
@@ -179,24 +169,5 @@ abstract class DeserializationStream {
     }
   }
 
-  /**
-   * Read the elements of this stream through an iterator over key-value pairs. This can only be
-   * called once, as reading each element will consume data from the input source.
-   */
-  def asKeyValueIterator: Iterator[(Any, Any)] = new NextIterator[(Any, Any)] {
-    override protected def getNext() = {
-      try {
-        (readKey[Any](), readValue[Any]())
-      } catch {
-        case eof: EOFException => {
-          finished = true
-          null
-        }
-      }
-    }
-
-    override protected def close() {
-      DeserializationStream.this.close()
-    }
-  }
+  final def asKeyValueIterator: Iterator[(Any, Any)] = asIterator.asInstanceOf[Iterator[(Any, Any)]]
 }
