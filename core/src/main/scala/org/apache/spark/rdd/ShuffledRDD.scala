@@ -21,7 +21,7 @@ import scala.reflect.ClassTag
 
 import org.apache.spark._
 import org.apache.spark.annotation.DeveloperApi
-import org.apache.spark.serializer.Serializer
+import org.apache.spark.serializer.{KeyValueSerializer, Serializer}
 
 private[spark] class ShuffledRDDPartition(val idx: Int) extends Partition {
   override val index: Int = idx
@@ -44,7 +44,7 @@ class ShuffledRDD[K: ClassTag, V: ClassTag, C: ClassTag](
     part: Partitioner)
   extends RDD[(K, C)](prev.context, Nil) {
 
-  private var userSpecifiedSerializer: Option[Serializer] = None
+  private var serializer: Serializer = new KeyValueSerializer(SparkEnv.get.serializer)
 
   private var keyOrdering: Option[Ordering[K]] = None
 
@@ -54,7 +54,9 @@ class ShuffledRDD[K: ClassTag, V: ClassTag, C: ClassTag](
 
   /** Set a serializer for this RDD's shuffle, or null to use the default (spark.serializer) */
   def setSerializer(serializer: Serializer): ShuffledRDD[K, V, C] = {
-    this.userSpecifiedSerializer = Option(serializer)
+    if (serializer != null) {
+      this.serializer = new KeyValueSerializer(serializer)
+    }
     this
   }
 
