@@ -23,6 +23,7 @@ import java.nio.{ByteBuffer, MappedByteBuffer}
 import scala.collection.mutable.{ArrayBuffer, HashMap}
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration._
+import scala.reflect.ClassTag
 import scala.util.Random
 import scala.util.control.NonFatal
 
@@ -38,7 +39,7 @@ import org.apache.spark.network.netty.SparkTransportConf
 import org.apache.spark.network.shuffle.ExternalShuffleClient
 import org.apache.spark.network.shuffle.protocol.ExecutorShuffleInfo
 import org.apache.spark.rpc.RpcEnv
-import org.apache.spark.serializer.{Serializer, SerializerInstance}
+import org.apache.spark.serializer.{SerializerManager, Serializer, SerializerInstance}
 import org.apache.spark.shuffle.ShuffleManager
 import org.apache.spark.storage.memory._
 import org.apache.spark.util._
@@ -59,7 +60,7 @@ private[spark] class BlockManager(
     executorId: String,
     rpcEnv: RpcEnv,
     val master: BlockManagerMaster,
-    defaultSerializer: Serializer,
+    serializerManager: SerializerManager,
     val conf: SparkConf,
     memoryManager: MemoryManager,
     mapOutputTracker: MapOutputTracker,
@@ -401,7 +402,7 @@ private[spark] class BlockManager(
   /**
    * Get block from local block manager as an iterator of Java objects.
    */
-  def getLocalValues(blockId: BlockId): Option[BlockResult] = {
+  def getLocalValues[T: ClassTag](blockId: BlockId): Option[BlockResult] = {
     logDebug(s"Getting local block $blockId")
     blockInfoManager.lockForReading(blockId) match {
       case None =>
@@ -414,12 +415,12 @@ private[spark] class BlockManager(
           val iter: Iterator[Any] = if (level.deserialized) {
             memoryStore.getValues(blockId).get
           } else {
-            dataDeserialize(blockId, memoryStore.getBytes(blockId).get)
+            dataDeserialize[T](blockId, memoryStore.getBytes(blockId).get)
           }
           val ci = CompletionIterator[Any, Iterator[Any]](iter, releaseLock(blockId))
           Some(new BlockResult(ci, DataReadMethod.Memory, info.size))
         } else if (level.useDisk && diskStore.contains(blockId)) {
-          val valuesFromDisk = dataDeserialize(blockId, diskStore.getBytes(blockId))
+          val valuesFromDisk = dataDeserialize[T](blockId, diskStore.getBytes(blockId))
           val iterToReturn: Iterator[Any] = {
             if (level.deserialized) {
               // Cache the values before returning them
@@ -543,7 +544,7 @@ private[spark] class BlockManager(
     preferredLocs ++ otherLocs
   }
 
-  private def doGetRemote(blockId: BlockId, asBlockResult: Boolean): Option[Any] = {
+  private def doGetRemote[T: ClassTag](blockId: BlockId, asBlockResult: Boolean): Option[Any] = {
     require(blockId != null, "BlockId is null")
     val locations = getLocations(blockId)
     var numFetchFailures = 0
@@ -641,16 +642,16 @@ private[spark] class BlockManager(
    * @return either a BlockResult if the block was successfully cached, or an iterator if the block
    *         could not be cached.
    */
-  def getOrElseUpdate(
+  def getOrElseUpdate[T: ClassTag](
       blockId: BlockId,
       level: StorageLevel,
-      makeIterator: () => Iterator[Any]): Either[BlockResult, Iterator[Any]] = {
+      makeIterator: () => Iterator[T]): Either[BlockResult, Iterator[T]] = {
     // Initially we hold no locks on this block.
     doPutIterator(blockId, makeIterator, level, keepReadLock = true) match {
       case None =>
         // doPut() didn't hand work back to us, so the block already existed or was successfully
         // stored. Therefore, we now hold a read lock on the block.
-        val blockResult = getLocalValues(blockId).getOrElse {
+        val blockResult = getLocalValues[T](blockId).getOrElse {
           // Since we held a read lock between the doPut() and get() calls, the block should not
           // have been evicted, so get() not returning the block indicates some internal error.
           releaseLock(blockId)
@@ -852,12 +853,12 @@ private[spark] class BlockManager(
    * @return None if the block was already present or if the put succeeded, or Some(iterator)
    *         if the put failed.
    */
-  private def doPutIterator(
+  private def doPutIterator[T: ClassTag](
       blockId: BlockId,
-      iterator: () => Iterator[Any],
+      iterator: () => Iterator[T],
       level: StorageLevel,
       tellMaster: Boolean = true,
-      keepReadLock: Boolean = false): Option[PartiallyUnrolledIterator] = {
+      keepReadLock: Boolean = false): Option[PartiallyUnrolledIterator[T]] = {
 
     require(blockId != null, "BlockId is null")
     require(level != null && level.isValid, "StorageLevel is null or invalid")
@@ -885,7 +886,7 @@ private[spark] class BlockManager(
     var size = 0L
 
     var blockWasSuccessfullyStored = false
-    var iteratorFromFailedMemoryStorePut: Option[PartiallyUnrolledIterator] = None
+    var iteratorFromFailedMemoryStorePut: Option[PartiallyUnrolledIterator[T]] = None
 
     try {
       if (level.useMemory) {
@@ -1226,17 +1227,17 @@ private[spark] class BlockManager(
   }
 
   /** Serializes into a stream. */
-  def dataSerializeStream(
+  def dataSerializeStream[T: ClassTag](
       blockId: BlockId,
       outputStream: OutputStream,
-      values: Iterator[Any]): Unit = {
+      values: Iterator[T]): Unit = {
     val byteStream = new BufferedOutputStream(outputStream)
-    val ser = defaultSerializer.newInstance()
+    val ser = serializerManager.getSerializer[T].newInstance()
     ser.serializeStream(wrapForCompression(blockId, byteStream)).writeAll(values).close()
   }
 
   /** Serializes into a byte buffer. */
-  def dataSerialize(blockId: BlockId, values: Iterator[Any]): ByteBuffer = {
+  def dataSerialize[T: ClassTag](blockId: BlockId, values: Iterator[T]): ByteBuffer = {
     val byteStream = new ByteBufferOutputStream(4096)
     dataSerializeStream(blockId, byteStream, values)
     byteStream.toByteBuffer
@@ -1246,21 +1247,23 @@ private[spark] class BlockManager(
    * Deserializes a ByteBuffer into an iterator of values and disposes of it when the end of
    * the iterator is reached.
    */
-  def dataDeserialize(blockId: BlockId, bytes: ByteBuffer): Iterator[Any] = {
+  def dataDeserialize[T: ClassTag](blockId: BlockId, bytes: ByteBuffer): Iterator[T] = {
     bytes.rewind()
-    dataDeserializeStream(blockId, new ByteBufferInputStream(bytes, true))
+    dataDeserializeStream[T](blockId, new ByteBufferInputStream(bytes, true))
   }
 
   /**
    * Deserializes a InputStream into an iterator of values and disposes of it when the end of
    * the iterator is reached.
    */
-  def dataDeserializeStream(blockId: BlockId, inputStream: InputStream): Iterator[Any] = {
+  def dataDeserializeStream[T: ClassTag](
+      blockId: BlockId,
+      inputStream: InputStream): Iterator[T] = {
     val stream = new BufferedInputStream(inputStream)
-    defaultSerializer
+    serializerManager.getSerializer[T]
       .newInstance()
       .deserializeStream(wrapForCompression(blockId, stream))
-      .asIterator
+      .asIterator.asInstanceOf[Iterator[T]]
   }
 
   def stop(): Unit = {
