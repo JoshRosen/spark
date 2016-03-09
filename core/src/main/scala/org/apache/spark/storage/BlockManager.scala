@@ -424,7 +424,7 @@ private[spark] class BlockManager(
             if (level.deserialized) {
               // Cache the values before returning them
               memoryStore.putIterator(blockId, valuesFromDisk, level) match {
-                case Left((pendingSize, iter)) =>
+                case Left(iter) =>
                   // The memory store put() failed, so it returned the iterator back to us:
                   iter
                 case Right(_) =>
@@ -678,13 +678,13 @@ private[spark] class BlockManager(
       level: StorageLevel,
       tellMaster: Boolean = true): Boolean = {
     require(values != null, "Values is null")
-    val maybeIterator = doPutIterator(
-      blockId,
-      () => values,
-      level,
-      tellMaster)
-    // If doPut() didn't hand work back to us, then block already existed or was successfully stored
-    maybeIterator.isEmpty
+    doPutIterator(blockId, () => values, level, tellMaster) match {
+      case None =>
+        true
+      case Some(iter) =>
+        iter.close()
+        false
+    }
   }
 
   /**
@@ -785,8 +785,8 @@ private[spark] class BlockManager(
           val values = dataDeserialize(blockId, bytes.duplicate())
           memoryStore.putIterator(blockId, values, level) match {
             case Right(_) => true
-            case Left((pendingSize, iter)) =>
-              memoryManager.releaseUnrollMemory(pendingSize)
+            case Left(iter) =>
+              iter.close()
               false
           }
         } else {
@@ -857,7 +857,7 @@ private[spark] class BlockManager(
       iterator: () => Iterator[Any],
       level: StorageLevel,
       tellMaster: Boolean = true,
-      keepReadLock: Boolean = false): Option[Iterator[Any]] = {
+      keepReadLock: Boolean = false): Option[PartiallyUnrolledIterator] = {
 
     require(blockId != null, "BlockId is null")
     require(level != null && level.isValid, "StorageLevel is null or invalid")
@@ -885,7 +885,7 @@ private[spark] class BlockManager(
     var size = 0L
 
     var blockWasSuccessfullyStored = false
-    var iteratorFromFailedMemoryStorePut: Option[Iterator[Any]] = None
+    var iteratorFromFailedMemoryStorePut: Option[PartiallyUnrolledIterator] = None
 
     try {
       if (level.useMemory) {
@@ -894,7 +894,7 @@ private[spark] class BlockManager(
         memoryStore.putIterator(blockId, iterator(), level) match {
           case Right(s) =>
             size = s
-          case Left((pendingMemory, iter)) =>
+          case Left(iter) =>
             // Not enough space to unroll this block; drop to disk if applicable
             if (level.useDisk) {
               logWarning(s"Persisting block $blockId to disk instead.")
@@ -902,7 +902,6 @@ private[spark] class BlockManager(
                 dataSerializeStream(blockId, fileOutputStream, iter)
               }
               size = diskStore.getSize(blockId)
-              memoryStore.releaseUnrollMemoryForThisTask(pendingMemory)
             } else {
               iteratorFromFailedMemoryStorePut = Some(iter)
             }
