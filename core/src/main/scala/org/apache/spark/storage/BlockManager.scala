@@ -424,7 +424,7 @@ private[spark] class BlockManager(
             if (level.deserialized) {
               // Cache the values before returning them
               memoryStore.putIterator(blockId, valuesFromDisk, level) match {
-                case Left(iter) =>
+                case Left((pendingSize, iter)) =>
                   // The memory store put() failed, so it returned the iterator back to us:
                   iter
                 case Right(_) =>
@@ -783,7 +783,12 @@ private[spark] class BlockManager(
         // We will drop it to disk later if the memory store can't hold it.
         val putSucceeded = if (level.deserialized) {
           val values = dataDeserialize(blockId, bytes.duplicate())
-          memoryStore.putIterator(blockId, values, level).isRight
+          memoryStore.putIterator(blockId, values, level) match {
+            case Right(_) => true
+            case Left((pendingSize, iter)) =>
+              memoryManager.releaseUnrollMemory(pendingSize)
+              false
+          }
         } else {
           memoryStore.putBytes(blockId, size, () => bytes)
         }
@@ -889,7 +894,7 @@ private[spark] class BlockManager(
         memoryStore.putIterator(blockId, iterator(), level) match {
           case Right(s) =>
             size = s
-          case Left(iter) =>
+          case Left((pendingMemory, iter)) =>
             // Not enough space to unroll this block; drop to disk if applicable
             if (level.useDisk) {
               logWarning(s"Persisting block $blockId to disk instead.")
@@ -897,6 +902,7 @@ private[spark] class BlockManager(
                 dataSerializeStream(blockId, fileOutputStream, iter)
               }
               size = diskStore.getSize(blockId)
+              memoryStore.releaseUnrollMemoryForThisTask(pendingMemory)
             } else {
               iteratorFromFailedMemoryStorePut = Some(iter)
             }
