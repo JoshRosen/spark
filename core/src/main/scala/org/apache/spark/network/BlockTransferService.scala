@@ -28,6 +28,8 @@ import org.apache.spark.network.buffer.{ManagedBuffer, NioManagedBuffer}
 import org.apache.spark.network.shuffle.{BlockFetchingListener, ShuffleClient}
 import org.apache.spark.storage.{BlockId, BlockManagerId, StorageLevel}
 
+import scala.reflect.ClassTag
+
 private[spark]
 abstract class BlockTransferService extends ShuffleClient with Closeable with Logging {
 
@@ -76,7 +78,8 @@ abstract class BlockTransferService extends ShuffleClient with Closeable with Lo
       execId: String,
       blockId: BlockId,
       blockData: ManagedBuffer,
-      level: StorageLevel): Future[Unit]
+      level: StorageLevel,
+      classTag: ClassTag[_]): Future[Unit]
 
   /**
    * A special case of [[fetchBlocks]], as it fetches only one block and is blocking.
@@ -114,7 +117,9 @@ abstract class BlockTransferService extends ShuffleClient with Closeable with Lo
       execId: String,
       blockId: BlockId,
       blockData: ManagedBuffer,
-      level: StorageLevel): Unit = {
-    Await.result(uploadBlock(hostname, port, execId, blockId, blockData, level), Duration.Inf)
+      level: StorageLevel,
+      classTag: ClassTag[_]): Unit = {
+    val future = uploadBlock(hostname, port, execId, blockId, blockData, level, classTag)
+    Await.result(future, Duration.Inf)
   }
 }

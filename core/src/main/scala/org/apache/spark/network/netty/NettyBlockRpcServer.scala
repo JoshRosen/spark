@@ -20,6 +20,7 @@ package org.apache.spark.network.netty
 import java.nio.ByteBuffer
 
 import scala.collection.JavaConverters._
+import scala.reflect.ClassTag
 
 import org.apache.spark.Logging
 import org.apache.spark.network.BlockDataManager
@@ -61,12 +62,16 @@ class NettyBlockRpcServer(
         responseContext.onSuccess(new StreamHandle(streamId, blocks.size).toByteBuffer)
 
       case uploadBlock: UploadBlock =>
-        // StorageLevel is serialized as bytes using our JavaSerializer.
-        val level: StorageLevel =
-          serializer.newInstance().deserialize(ByteBuffer.wrap(uploadBlock.metadata))
+        // StorageLevel and ClassTag are serialized as bytes using our JavaSerializer.
+        val (classTag: ClassTag[_], level: StorageLevel) = {
+          serializer
+            .newInstance()
+            .deserialize(ByteBuffer.wrap(uploadBlock.metadata))
+            .asInstanceOf[(ClassTag[_], StorageLevel)]
+        }
         val data = new NioManagedBuffer(ByteBuffer.wrap(uploadBlock.blockData))
         val blockId = BlockId(uploadBlock.blockId)
-        blockManager.putBlockData(blockId, data, level)
+        blockManager.putBlockData(blockId, data, level, classTag)
         responseContext.onSuccess(ByteBuffer.allocate(0))
     }
   }

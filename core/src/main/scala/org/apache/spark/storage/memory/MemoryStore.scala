@@ -40,12 +40,11 @@ private case class SerializedMemoryEntry(
     size: Long)
   extends MemoryEntry
 
-private case class DeserializedMemoryEntry[T: ClassTag](
+private case class DeserializedMemoryEntry[T](
     value: Array[T],
-    size: Long)
-  extends MemoryEntry {
-  val classTag: ClassTag[T] = implicitly[ClassTag[T]]
-}
+    size: Long,
+    classTag: ClassTag[T])
+  extends MemoryEntry
 
 /**
  * Stores blocks in memory, either as Arrays of deserialized Java objects or as
@@ -189,7 +188,7 @@ private[spark] class MemoryStore(
       vector = null
       val entry = if (level.deserialized) {
         val sizeEstimate = SizeEstimator.estimate(arrayValues)
-        DeserializedMemoryEntry(arrayValues, sizeEstimate)
+        DeserializedMemoryEntry(arrayValues, sizeEstimate, implicitly[ClassTag[T]])
       } else {
         val bytes = blockManager.dataSerialize(blockId, arrayValues.iterator)
         SerializedMemoryEntry(bytes, bytes.limit)
@@ -235,7 +234,7 @@ private[spark] class MemoryStore(
         None
       case SerializedMemoryEntry(bytes, _) =>
         Some(bytes.duplicate()) // Doesn't actually copy the data
-      case DeserializedMemoryEntry(_, _) =>
+      case DeserializedMemoryEntry(_, _, _) =>
         throw new IllegalArgumentException(
           "should only call getBytes on blocks stored in serialized form")
     }
@@ -245,7 +244,7 @@ private[spark] class MemoryStore(
     entries.synchronized { entries.get(blockId) } match {
       case null =>
         None
-      case DeserializedMemoryEntry(values, _) =>
+      case DeserializedMemoryEntry(values, _, _) =>
         Some(values.iterator.asInstanceOf[Iterator[T]])
       case SerializedMemoryEntry(_, _) =>
         throw new IllegalArgumentException(
@@ -330,11 +329,12 @@ private[spark] class MemoryStore(
           // blocks and removing entries. However the check is still here for
           // future safety.
           if (entry != null) {
-            val data = entry match {
-              case DeserializedMemoryEntry(values, _) => Left(values)
-              case SerializedMemoryEntry(bytes, _) => Right(bytes)
+            val newEffectiveStorageLevel = entry match {
+              case DeserializedMemoryEntry(values, _, classTag) =>
+                blockManager.dropFromMemory(blockId, () => Left(values))(classTag)
+              case SerializedMemoryEntry(bytes, _) =>
+                blockManager.dropFromMemory(blockId, () => Right(bytes))
             }
-            val newEffectiveStorageLevel = blockManager.dropFromMemory(blockId, () => data)
             if (newEffectiveStorageLevel.isValid) {
               // The block is still present in at least one store, so release the lock
               // but don't delete the block info

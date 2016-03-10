@@ -292,8 +292,12 @@ private[spark] class BlockManager(
   /**
    * Put the block locally, using the given storage level.
    */
-  override def putBlockData(blockId: BlockId, data: ManagedBuffer, level: StorageLevel): Boolean = {
-    putBytes(blockId, data.nioByteBuffer(), level)
+  override def putBlockData(
+      blockId: BlockId,
+      data: ManagedBuffer,
+      level: StorageLevel,
+      classTag: ClassTag[_]): Boolean = {
+    doPutBytes(blockId, data.nioByteBuffer(), level, classTag)
   }
 
   /**
@@ -521,9 +525,9 @@ private[spark] class BlockManager(
    *
    * This does not acquire a lock on this block in this JVM.
    */
-  def getRemote(blockId: BlockId): Option[BlockResult] = {
+  def getRemote[T: ClassTag](blockId: BlockId): Option[BlockResult] = {
     getRemoteBytes(blockId).map { data =>
-      new BlockResult(dataDeserialize(blockId, data), DataReadMethod.Network, data.limit())
+      new BlockResult(dataDeserialize[T](blockId, data), DataReadMethod.Network, data.limit())
     }
   }
 
@@ -706,7 +710,7 @@ private[spark] class BlockManager(
       level: StorageLevel,
       tellMaster: Boolean = true): Boolean = {
     require(bytes != null, "Bytes is null")
-    doPutBytes(blockId, bytes, level, tellMaster)
+    doPutBytes(blockId, bytes, level, ClassTag.Any, tellMaster)
   }
 
   /**
@@ -724,6 +728,7 @@ private[spark] class BlockManager(
       blockId: BlockId,
       bytes: ByteBuffer,
       level: StorageLevel,
+      classTag: ClassTag[_],
       tellMaster: Boolean = true,
       keepReadLock: Boolean = false): Boolean = {
 
@@ -757,7 +762,7 @@ private[spark] class BlockManager(
       Future {
         // This is a blocking action and should run in futureExecutionContext which is a cached
         // thread pool
-        replicate(blockId, bufferView, level)
+        replicate(blockId, bufferView, level, classTag)
       }(futureExecutionContext)
     } else {
       null
@@ -773,7 +778,7 @@ private[spark] class BlockManager(
         // Put it in memory first, even if it also has useDisk set to true;
         // We will drop it to disk later if the memory store can't hold it.
         val putSucceeded = if (level.deserialized) {
-          val values = dataDeserialize(blockId, bytes.duplicate())
+          val values = dataDeserialize(blockId, bytes.duplicate())(classTag)
           memoryStore.putIterator(blockId, values, level) match {
             case Right(_) => true
             case Left(iter) =>
@@ -890,7 +895,7 @@ private[spark] class BlockManager(
             if (level.useDisk) {
               logWarning(s"Persisting block $blockId to disk instead.")
               diskStore.put(blockId) { fileOutputStream =>
-                dataSerializeStream(blockId, fileOutputStream, iter)
+                dataSerializeStream[T](blockId, fileOutputStream, iter)
               }
               size = diskStore.getSize(blockId)
             } else {
@@ -899,7 +904,7 @@ private[spark] class BlockManager(
         }
       } else if (level.useDisk) {
         diskStore.put(blockId) { fileOutputStream =>
-          dataSerializeStream(blockId, fileOutputStream, iterator())
+          dataSerializeStream[T](blockId, fileOutputStream, iterator())
         }
         size = diskStore.getSize(blockId)
       }
@@ -934,7 +939,7 @@ private[spark] class BlockManager(
       val remoteStartTime = System.currentTimeMillis
       val bytesToReplicate = doGetLocalBytes(blockId, putBlockInfo)
       try {
-        replicate(blockId, bytesToReplicate, level)
+        replicate(blockId, bytesToReplicate, level, implicitly[ClassTag[T]])
       } finally {
         BlockManager.dispose(bytesToReplicate)
       }
@@ -977,7 +982,11 @@ private[spark] class BlockManager(
    * Replicate block to another node. Not that this is a blocking call that returns after
    * the block has been replicated.
    */
-  private def replicate(blockId: BlockId, data: ByteBuffer, level: StorageLevel): Unit = {
+  private def replicate(
+      blockId: BlockId,
+      data: ByteBuffer,
+      level: StorageLevel,
+      classTag: ClassTag[_]): Unit = {
     val maxReplicationFailures = conf.getInt("spark.storage.maxReplicationFailures", 1)
     val numPeersToReplicateTo = level.replication - 1
     val peersForReplication = new ArrayBuffer[BlockManagerId]
@@ -1033,7 +1042,13 @@ private[spark] class BlockManager(
             data.rewind()
             logTrace(s"Trying to replicate $blockId of ${data.limit()} bytes to $peer")
             blockTransferService.uploadBlockSync(
-              peer.host, peer.port, peer.executorId, blockId, new NioManagedBuffer(data), tLevel)
+              peer.host,
+              peer.port,
+              peer.executorId,
+              blockId,
+              new NioManagedBuffer(data),
+              tLevel,
+              classTag)
             logTrace(s"Replicated $blockId of ${data.limit()} bytes to $peer in %s ms"
               .format(System.currentTimeMillis - onePeerStartTime))
             peersReplicatedTo += peer
@@ -1097,9 +1112,9 @@ private[spark] class BlockManager(
    *
    * @return the block's new effective StorageLevel.
    */
-  def dropFromMemory(
+  def dropFromMemory[T: ClassTag](
       blockId: BlockId,
-      data: () => Either[Array[Any], ByteBuffer]): StorageLevel = {
+      data: () => Either[Array[T], ByteBuffer]): StorageLevel = {
     logInfo(s"Dropping block $blockId from memory")
     val info = blockInfoManager.assertBlockIsLockedForWriting(blockId)
     var blockIsUpdated = false
@@ -1111,7 +1126,7 @@ private[spark] class BlockManager(
       data() match {
         case Left(elements) =>
           diskStore.put(blockId) { fileOutputStream =>
-            dataSerializeStream(blockId, fileOutputStream, elements.toIterator)
+            dataSerializeStream[T](blockId, fileOutputStream, elements.toIterator)
           }
         case Right(bytes) =>
           diskStore.putBytes(blockId, bytes)
@@ -1229,7 +1244,7 @@ private[spark] class BlockManager(
   /** Serializes into a byte buffer. */
   def dataSerialize[T: ClassTag](blockId: BlockId, values: Iterator[T]): ByteBuffer = {
     val byteStream = new ByteBufferOutputStream(4096)
-    dataSerializeStream(blockId, byteStream, values)
+    dataSerializeStream[T](blockId, byteStream, values)
     byteStream.toByteBuffer
   }
 
@@ -1246,7 +1261,7 @@ private[spark] class BlockManager(
    * Deserializes a InputStream into an iterator of values and disposes of it when the end of
    * the iterator is reached.
    */
-  def dataDeserializeStream[T: ClassTag](
+  private def dataDeserializeStream[T: ClassTag](
       blockId: BlockId,
       inputStream: InputStream): Iterator[T] = {
     val stream = new BufferedInputStream(inputStream)
