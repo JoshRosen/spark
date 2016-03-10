@@ -22,6 +22,7 @@ import java.util.LinkedHashMap
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
+import scala.reflect.ClassTag
 
 import org.apache.spark.{Logging, SparkConf, TaskContext}
 import org.apache.spark.memory.MemoryManager
@@ -29,9 +30,22 @@ import org.apache.spark.storage.{BlockId, BlockManager, StorageLevel}
 import org.apache.spark.util.{CompletionIterator, SizeEstimator, Utils}
 import org.apache.spark.util.collection.SizeTrackingVector
 
-import scala.reflect.ClassTag
 
-private case class MemoryEntry(value: Any, size: Long, deserialized: Boolean)
+private sealed trait MemoryEntry {
+  val size: Long
+}
+
+private case class SerializedMemoryEntry(
+    buffer: ByteBuffer,
+    size: Long)
+  extends MemoryEntry
+
+private case class DeserializedMemoryEntry[T: ClassTag](
+    value: Array[T],
+    size: Long)
+  extends MemoryEntry {
+  val classTag: ClassTag[T] = implicitly[ClassTag[T]]
+}
 
 /**
  * Stores blocks in memory, either as Arrays of deserialized Java objects or as
@@ -99,7 +113,7 @@ private[spark] class MemoryStore(
       // Work on a duplicate - since the original input might be used elsewhere.
       val bytes = _bytes().duplicate().rewind().asInstanceOf[ByteBuffer]
       assert(bytes.limit == size)
-      val entry = new MemoryEntry(bytes, size, deserialized = false)
+      val entry = SerializedMemoryEntry(bytes, size)
       entries.synchronized {
         entries.put(blockId, entry)
       }
@@ -171,14 +185,14 @@ private[spark] class MemoryStore(
 
     if (keepUnrolling) {
       // We successfully unrolled the entirety of this block
-      val arrayValues = vector.toArray
+      val arrayValues: Array[T] = vector.toArray
       vector = null
       val entry = if (level.deserialized) {
-        val sizeEstimate = SizeEstimator.estimate(arrayValues.asInstanceOf[AnyRef])
-        new MemoryEntry(arrayValues, sizeEstimate, deserialized = true)
+        val sizeEstimate = SizeEstimator.estimate(arrayValues)
+        DeserializedMemoryEntry(arrayValues, sizeEstimate)
       } else {
         val bytes = blockManager.dataSerialize(blockId, arrayValues.iterator)
-        new MemoryEntry(bytes, bytes.limit, deserialized = false)
+        SerializedMemoryEntry(bytes, bytes.limit)
       }
       val size = entry.size
       val acquiredStorageMemory = {
@@ -216,26 +230,26 @@ private[spark] class MemoryStore(
   }
 
   def getBytes(blockId: BlockId): Option[ByteBuffer] = {
-    val entry = entries.synchronized {
-      entries.get(blockId)
-    }
-    if (entry == null) {
-      None
-    } else {
-      require(!entry.deserialized, "should only call getBytes on blocks stored in serialized form")
-      Some(entry.value.asInstanceOf[ByteBuffer].duplicate()) // Doesn't actually copy the data
+    entries.synchronized { entries.get(blockId) } match {
+      case null =>
+        None
+      case SerializedMemoryEntry(bytes, _) =>
+        Some(bytes.duplicate()) // Doesn't actually copy the data
+      case DeserializedMemoryEntry(_, _) =>
+        throw new IllegalArgumentException(
+          "should only call getBytes on blocks stored in serialized form")
     }
   }
 
-  def getValues(blockId: BlockId): Option[Iterator[Any]] = {
-    val entry = entries.synchronized {
-      entries.get(blockId)
-    }
-    if (entry == null) {
-      None
-    } else {
-      require(entry.deserialized, "should only call getValues on deserialized blocks")
-      Some(entry.value.asInstanceOf[Array[Any]].iterator)
+  def getValues[T](blockId: BlockId): Option[Iterator[T]] = {
+    entries.synchronized { entries.get(blockId) } match {
+      case null =>
+        None
+      case DeserializedMemoryEntry(values, _) =>
+        Some(values.iterator.asInstanceOf[Iterator[T]])
+      case SerializedMemoryEntry(_, _) =>
+        throw new IllegalArgumentException(
+          "should only call getValues on blocks stored in deserialized form")
     }
   }
 
@@ -316,10 +330,9 @@ private[spark] class MemoryStore(
           // blocks and removing entries. However the check is still here for
           // future safety.
           if (entry != null) {
-            val data = if (entry.deserialized) {
-              Left(entry.value.asInstanceOf[Array[Any]])
-            } else {
-              Right(entry.value.asInstanceOf[ByteBuffer].duplicate())
+            val data = entry match {
+              case DeserializedMemoryEntry(values, _) => Left(values)
+              case SerializedMemoryEntry(bytes, _) => Right(bytes)
             }
             val newEffectiveStorageLevel = blockManager.dropFromMemory(blockId, () => data)
             if (newEffectiveStorageLevel.isValid) {
