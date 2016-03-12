@@ -36,7 +36,7 @@ import org.apache.spark.util.NextIterator
  * 1. a zero-arg constructor or a constructor that accepts a [[org.apache.spark.SparkConf]]
  * as parameter. If both constructors are defined, the latter takes precedence.
  *
- * 2. Java serialization interface.
+ * 2. Java serialization interface (either [[Externalizable]] or [[Serializable]]).
  *
  * Note that serializers are not required to be wire-compatible across different versions of Spark.
  * They are intended to be used to serialize/de-serialize data within a single Spark application.
