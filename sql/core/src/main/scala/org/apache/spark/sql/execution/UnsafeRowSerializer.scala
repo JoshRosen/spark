@@ -41,7 +41,7 @@ import org.apache.spark.unsafe.Platform
  */
 private[sql] class UnsafeRowSerializer(numFields: Int) extends Serializer with Serializable {
   override def newInstance(): SerializerInstance = new UnsafeRowSerializerInstance(numFields)
-  override private[spark] def supportsRelocationOfSerializedObjects: Boolean = true
+  override def supportsRelocationOfSerializedObjects: Boolean = true
 }
 
 private class UnsafeRowSerializerInstance(numFields: Int) extends SerializerInstance {

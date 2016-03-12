@@ -27,6 +27,7 @@ import scala.reflect.ClassTag
  */
 class TestSerializer extends Serializer {
   override def newInstance(): TestSerializerInstance = new TestSerializerInstance
+  override def supportsRelocationOfSerializedObjects: Boolean = false
 }
 
 

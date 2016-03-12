@@ -24,11 +24,9 @@ import javax.annotation.concurrent.NotThreadSafe
 import scala.reflect.ClassTag
 
 import org.apache.spark.SparkEnv
-import org.apache.spark.annotation.{DeveloperApi, Private}
 import org.apache.spark.util.NextIterator
 
 /**
- * :: DeveloperApi ::
  * A serializer. Because some serialization libraries are not thread safe, this class is used to
  * create [[org.apache.spark.serializer.SerializerInstance]] objects that do the actual
  * serialization and are guaranteed to only be called from one thread at a time.
@@ -43,8 +41,7 @@ import org.apache.spark.util.NextIterator
  * Note that serializers are not required to be wire-compatible across different versions of Spark.
  * They are intended to be used to serialize/de-serialize data within a single Spark application.
  */
-@DeveloperApi
-abstract class Serializer {
+private[spark] abstract class Serializer {
 
   /**
    * Default ClassLoader to use in deserialization. Implementations of [[Serializer]] should
@@ -66,7 +63,6 @@ abstract class Serializer {
   def newInstance(): SerializerInstance
 
   /**
-   * :: Private ::
    * Returns true if this serializer supports relocation of its serialized objects and false
    * otherwise. This should return true if and only if reordering the bytes of serialized objects
    * in serialization stream output is equivalent to having re-ordered those elements prior to
@@ -90,18 +86,13 @@ abstract class Serializer {
    * In general, this property should hold for serializers that are stateless and that do not
    * write special metadata at the beginning or end of the serialization stream.
    *
-   * This API is private to Spark; this method should not be overridden in third-party subclasses
-   * or called in user code and is subject to removal in future Spark releases.
-   *
    * See SPARK-7311 for more details.
    */
-  @Private
-  private[spark] def supportsRelocationOfSerializedObjects: Boolean = false
+  def supportsRelocationOfSerializedObjects: Boolean
 }
 
 
-@DeveloperApi
-object Serializer {
+private[spark] object Serializer {
   def getSerializer(serializer: Serializer): Serializer = {
     if (serializer == null) SparkEnv.get.serializer else serializer
   }
@@ -113,15 +104,13 @@ object Serializer {
 
 
 /**
- * :: DeveloperApi ::
  * An instance of a serializer, for use by one thread at a time.
  *
  * It is legal to create multiple serialization / deserialization streams from the same
  * SerializerInstance as long as those streams are all used within the same thread.
  */
-@DeveloperApi
 @NotThreadSafe
-abstract class SerializerInstance {
+private[spark] abstract class SerializerInstance {
   def serialize[T: ClassTag](t: T): ByteBuffer
 
   def deserialize[T: ClassTag](bytes: ByteBuffer): T
@@ -134,11 +123,9 @@ abstract class SerializerInstance {
 }
 
 /**
- * :: DeveloperApi ::
  * A stream for writing serialized objects.
  */
-@DeveloperApi
-abstract class SerializationStream {
+private[spark] abstract class SerializationStream {
   /** The most general-purpose method to write an object. */
   def writeObject[T: ClassTag](t: T): SerializationStream
   /** Writes the object representing the key of a key-value pair. */
@@ -158,11 +145,9 @@ abstract class SerializationStream {
 
 
 /**
- * :: DeveloperApi ::
  * A stream for reading serialized objects.
  */
-@DeveloperApi
-abstract class DeserializationStream {
+private[spark] abstract class DeserializationStream {
   /** The most general-purpose method to read an object. */
   def readObject[T: ClassTag](): T
   /** Reads the object representing the key of a key-value pair. */

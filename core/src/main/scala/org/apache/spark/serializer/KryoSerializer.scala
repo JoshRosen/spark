@@ -47,7 +47,7 @@ import org.apache.spark.util.collection.CompactBuffer
  * Spark. It is intended to be used to serialize/de-serialize data within a single
  * Spark application.
  */
-class KryoSerializer(conf: SparkConf)
+private[spark] class KryoSerializer(conf: SparkConf)
   extends org.apache.spark.serializer.Serializer
   with Logging
   with Serializable {
@@ -174,7 +174,7 @@ class KryoSerializer(conf: SparkConf)
     new KryoSerializerInstance(this)
   }
 
-  private[spark] override lazy val supportsRelocationOfSerializedObjects: Boolean = {
+  override lazy val supportsRelocationOfSerializedObjects: Boolean = {
     // If auto-reset is disabled, then Kryo may store references to duplicate occurrences of objects
     // in the stream rather than writing those objects' serialized bytes, breaking relocation. See
     // https://groups.google.com/d/msg/kryo-users/6ZUSyfjjtdo/FhGG1KHDXPgJ for more details.

@@ -23,7 +23,6 @@ import java.nio.ByteBuffer
 import scala.reflect.ClassTag
 
 import org.apache.spark.SparkConf
-import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.util.{ByteBufferInputStream, ByteBufferOutputStream, Utils}
 
 private[spark] class JavaSerializationStream(
@@ -128,15 +127,13 @@ private[spark] class JavaSerializerInstance(
 }
 
 /**
- * :: DeveloperApi ::
  * A Spark serializer that uses Java's built-in serialization.
  *
  * Note that this serializer is not guaranteed to be wire-compatible across different versions of
  * Spark. It is intended to be used to serialize/de-serialize data within a single
  * Spark application.
  */
-@DeveloperApi
-class JavaSerializer(conf: SparkConf) extends Serializer with Externalizable {
+private[spark] class JavaSerializer(conf: SparkConf) extends Serializer with Externalizable {
   private var counterReset = conf.getInt("spark.serializer.objectStreamReset", 100)
   private var extraDebugInfo = conf.getBoolean("spark.serializer.extraDebugInfo", true)
 
@@ -156,4 +153,6 @@ class JavaSerializer(conf: SparkConf) extends Serializer with Externalizable {
     counterReset = in.readInt()
     extraDebugInfo = in.readBoolean()
   }
+
+  override def supportsRelocationOfSerializedObjects: Boolean = false
 }
