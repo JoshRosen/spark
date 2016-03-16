@@ -22,14 +22,14 @@ import java.nio.ByteBuffer
 
 import scala.reflect.ClassTag
 
-class KeyValueSerializer(wrapped: Serializer) extends Serializer with Serializable {
+private[spark] class KeyValueSerializer(wrapped: Serializer) extends Serializer with Serializable {
   override private[spark] def supportsRelocationOfSerializedObjects: Boolean =
     wrapped.supportsRelocationOfSerializedObjects
   override def newInstance(): SerializerInstance =
     new KeyValueSerializerInstance(wrapped.newInstance())
 }
 
-class KeyValueSerializerInstance(wrapped: SerializerInstance) extends SerializerInstance {
+private class KeyValueSerializerInstance(wrapped: SerializerInstance) extends SerializerInstance {
   override def serialize[T: ClassTag](obj: T): ByteBuffer = wrapped.serialize(obj)
   override def serializeStream(s: OutputStream): SerializationStream =
     new KeyValueSerializationStream(wrapped.serializeStream(s))
@@ -40,7 +40,9 @@ class KeyValueSerializerInstance(wrapped: SerializerInstance) extends Serializer
     wrapped.deserialize(bytes, loader)
 }
 
-class KeyValueSerializationStream(wrapped: SerializationStream) extends SerializationStream {
+private class KeyValueSerializationStream(
+    wrapped: SerializationStream)
+  extends SerializationStream {
   override def writeObject[T: ClassTag](t: T): SerializationStream = {
     val pair = t.asInstanceOf[Product2[Any, Any]]
     wrapped.writeObject(pair._1)
@@ -50,7 +52,9 @@ class KeyValueSerializationStream(wrapped: SerializationStream) extends Serializ
   override def close(): Unit = wrapped.close()
 }
 
-class KeyValueDeserializationStream(wrapped: DeserializationStream) extends DeserializationStream {
+private class KeyValueDeserializationStream(
+    wrapped: DeserializationStream)
+  extends DeserializationStream {
   override def readObject[T: ClassTag](): T = {
     (wrapped.readObject(), wrapped.readObject()).asInstanceOf[T]
   }

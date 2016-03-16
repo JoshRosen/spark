@@ -153,7 +153,7 @@ abstract class DeserializationStream {
    * Read the elements of this stream through an iterator. This can only be called once, as
    * reading each element will consume data from the input source.
    */
-  def asIterator[T: ClassTag]: Iterator[T] = new NextIterator[T] {
+  final def asIterator[T: ClassTag]: Iterator[T] = new NextIterator[T] {
     override protected def getNext() = {
       try {
         readObject[T]()
@@ -169,5 +169,6 @@ abstract class DeserializationStream {
     }
   }
 
+  // TODO(josh): remove me
   final def asKeyValueIterator: Iterator[(Any, Any)] = asIterator.asInstanceOf[Iterator[(Any, Any)]]
 }

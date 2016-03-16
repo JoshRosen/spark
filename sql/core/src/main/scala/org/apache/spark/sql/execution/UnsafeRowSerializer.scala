@@ -78,43 +78,6 @@ private class UnsafeRowSerializerInstance(numFields: Int) extends SerializerInst
       // 1024 is a default buffer size; this buffer will grow to accommodate larger rows
       private[this] var rowBuffer: Array[Byte] = new Array[Byte](1024)
       private[this] var row: UnsafeRow = new UnsafeRow(numFields)
-      private[this] val EOF: Int = -1
-
-      override def asIterator[T: ClassTag]: Iterator[T] = {
-        new Iterator[T] {
-
-          private[this] def readSize(): Int = try {
-            dIn.readInt()
-          } catch {
-            case e: EOFException =>
-              dIn.close()
-              EOF
-          }
-
-          private[this] var rowSize: Int = readSize()
-          override def hasNext: Boolean = rowSize != EOF
-
-          override def next(): T = {
-            if (rowBuffer.length < rowSize) {
-              rowBuffer = new Array[Byte](rowSize)
-            }
-            ByteStreams.readFully(dIn, rowBuffer, 0, rowSize)
-            row.pointTo(rowBuffer, Platform.BYTE_ARRAY_OFFSET, rowSize)
-            rowSize = readSize()
-            if (rowSize == EOF) { // We are returning the last row in this stream
-              dIn.close()
-              val _row = row
-              // Null these out so that the byte array can be garbage collected once the entire
-              // iterator has been consumed
-              row = null
-              rowBuffer = null
-              _row.asInstanceOf[T]
-            } else {
-              row.asInstanceOf[T]
-            }
-          }
-        }
-      }
 
       override def readObject[T: ClassTag](): T = {
         val rowSize = dIn.readInt()
@@ -128,6 +91,8 @@ private class UnsafeRowSerializerInstance(numFields: Int) extends SerializerInst
 
       override def close(): Unit = {
         dIn.close()
+        rowBuffer = null
+        row = null
       }
     }
   }
