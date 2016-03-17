@@ -61,11 +61,12 @@ private[spark] class SerializerManager(defaultSerializer: Serializer, conf: Spar
   /**
    * Pick the best serializer for shuffling an RDD of key-value pairs.
    */
-  def getSerializer(keyClassTag: ClassTag[_], valueClassTag: ClassTag[_]): Serializer = {
-    if (canUseKryo(keyClassTag) && canUseKryo(valueClassTag)) {
+  def getSerializer(keyClassTag: ClassTag[_], valueClassTag: ClassTag[_]): KeyValueSerializer = {
+    val serializer = if (canUseKryo(keyClassTag) && canUseKryo(valueClassTag)) {
       kryoSerializer
     } else {
       defaultSerializer
     }
+    new KeyValueSerializer(serializer)
   }
 }

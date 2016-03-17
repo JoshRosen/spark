@@ -21,7 +21,7 @@ import scala.reflect.ClassTag
 
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.rdd.RDD
-import org.apache.spark.serializer.Serializer
+import org.apache.spark.serializer.{KeyValueSerializer, Serializer}
 import org.apache.spark.shuffle.ShuffleHandle
 
 /**
@@ -70,7 +70,7 @@ abstract class NarrowDependency[T](_rdd: RDD[T]) extends Dependency[T] {
 class ShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
     @transient private val _rdd: RDD[_ <: Product2[K, V]],
     val partitioner: Partitioner,
-    val serializer: Serializer = SparkEnv.get.serializer,
+    val serializer: Serializer = new KeyValueSerializer(SparkEnv.get.serializer),
     val keyOrdering: Option[Ordering[K]] = None,
     val aggregator: Option[Aggregator[K, V, C]] = None,
     val mapSideCombine: Boolean = false)
