@@ -23,43 +23,67 @@ import javassist.{CtMethod, CtMember, ClassPool}
 import javassist.bytecode.{ConstPool, Opcode, InstructionPrinter}
 import javassist.bytecode.analysis.Analyzer
 
+import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+
+import scala.collection.mutable
+
 object ClosureToExpressionConverter {
 
   val analyzer = new Analyzer()
   val classPool = ClassPool.getDefault
 
-  var nextIdentifier = new AtomicInteger(-1)
-
-  def analyzeMethod(method : CtMethod): Unit = {
+  def analyzeMethod(method : CtMethod): Option[Expression] = {
     println ("-" * 80)
     println (method.getName)
     println ("-" * 80)
+
+    val exprs = mutable.Map[String, Expression]()
 
     val frames = analyzer.analyze(method)
     val instructions = method.getMethodInfo().getCodeAttribute.iterator()
     val cp = method.getMethodInfo.getConstPool
     var stackHeight = 0
     while (instructions.hasNext) {
-      print(s"stack height is $stackHeight | ")
       val pos = instructions.next()
       val op = instructions.byteAt(pos)
-      stackHeight += Opcode.STACK_GROW(op)
       val mnemonic = InstructionPrinter.instructionString(instructions, pos, cp)
+      println("*" * 20 + " " + mnemonic + s" (stack = $stackHeight) " + "*" * 20)
+      def stack(i: Int) = s"stack$i"
+
+      val stackGrow: Int = {
+        op match {
+          case Opcode.INVOKEVIRTUAL => {
+            val mrClassName = cp.getMethodrefClassName(instructions.u16bitAt(pos + 1))
+            val mrMethName = cp.getMethodrefName(instructions.u16bitAt(pos + 1))
+            val mrDesc = cp.getMethodrefType(instructions.u16bitAt(pos + 1))
+            val ctClass = classPool.get(mrClassName)
+            val ctMethod = ctClass.getMethod(mrMethName, mrDesc)
+            val numParameters = ctMethod.getParameterTypes.length
+            numParameters + 1
+          }
+          case _ => Opcode.STACK_GROW(op)
+        }
+      }
+      val targetVarName = stack(stackHeight + stackGrow)
+
       op match {
         case Opcode.ALOAD_0 =>
-          println(s"stack$stackHeight = local0")
+          exprs(targetVarName) = UnresolvedAttribute("local0")
+        case Opcode.ALOAD_1 =>
+          exprs(targetVarName) = UnresolvedAttribute("local1")
         case Opcode.ILOAD_1 =>
-          println(s"stack$stackHeight = local1")
+          exprs(targetVarName) = UnresolvedAttribute("local1")
         case Opcode.ICONST_1 =>
-          println(s"stack$stackHeight = 1")
+          exprs(targetVarName) = Literal(1)
         case Opcode.IADD =>
-          println(s"stack$stackHeight = stack${stackHeight - 1} + stack${stackHeight}")
+          exprs(targetVarName) = Add(exprs(stack(stackHeight - 1)), exprs(stack(stackHeight)))
+//          println(s"stack$stackHeight = stack${stackHeight - 1} + stack${stackHeight}")
         case Opcode.LDC =>
           val cp_index = instructions.byteAt(pos + 1)
           val value = cp.getTag(cp_index) match {
             case ConstPool.CONST_Integer => cp.getIntegerInfo(cp_index)
           }
-          println(s"stack$stackHeight = $value")
+//          println(s"stack$stackHeight = $value")
         case Opcode.INVOKEVIRTUAL =>
           val mrClassName = cp.getMethodrefClassName(instructions.u16bitAt(pos + 1))
           val mrMethName = cp.getMethodrefName(instructions.u16bitAt(pos + 1))
@@ -68,12 +92,23 @@ object ClosureToExpressionConverter {
           val ctMethod = ctClass.getMethod(mrMethName, mrDesc)
           val numParameters = ctMethod.getParameterTypes.length
           println(s"stack$stackHeight = ($mrClassName stack${stackHeight - numParameters}).$mrMethName(${(1 to numParameters).map(i => s"stack${stackHeight - i}").mkString(", ")})")
-          analyzeMethod(ctMethod)
-          stackHeight -= numParameters + 1
+          analyzeMethod(ctMethod) match {
+            case Some(expr) => exprs(targetVarName) = expr
+            case None =>
+              println("ERROR: Problem analyzing method call")
+              return None
+          }
         case Opcode.IRETURN =>
+          return Some(exprs(stack(stackHeight)))
           println(s"Return stack${stackHeight + 1}")
         case _ =>
-          println(s"Unknown opcode $mnemonic")
+          println(s"ERROR: Unknown opcode $mnemonic")
+          return None
+      }
+      stackHeight += stackGrow
+
+      exprs.toSeq.sortBy(_._1).foreach { case (label, value) =>
+        println(s"    $label = $value")
       }
 //      if (op == Opcode.INVOKEVIRTUAL) {
 
@@ -82,22 +117,21 @@ object ClosureToExpressionConverter {
 //        println(InstructionPrinter.instructionString(instructions, pos, cp))
 //      }
     }
-    println
+    throw new Exception("oh no!")
   }
 
   def convert[T, R](closure: Function[T, R]): Option[Expression] = {
 
     val ctClass = classPool.get(closure.getClass.getName)
     val applyMethods = ctClass.getMethods.filter(_.getName == "apply")
-    applyMethods.foreach { method =>
+    applyMethods.flatMap { method =>
       analyzeMethod(method)
-    }
-    None
+    }.headOption
   }
 
-  val x = (y: Int) => y + 1 + y + 342424
+  val x = (y: Int) => y + 1 // + y + 342424
 
   def main(args: Array[String]): Unit = {
-    print(convert(x))
+    println("THE RESULT OF EXPR IS:\n" + convert(x).getOrElse("ERROR!"))
   }
 }
