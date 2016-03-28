@@ -21,7 +21,7 @@
 package org.apache.spark.sql.catalyst.expressions
 
 import org.apache.spark.sql.Row
-import org.apache.spark.sql.types.{LongType, IntegerType}
+import org.apache.spark.sql.types.{DoubleType, LongType, IntegerType}
 
 import scala.collection.mutable
 
@@ -49,13 +49,23 @@ object ClosureToExpressionConverter {
     def stack(i: Int) = s"stack$i"
 
 
+
     val instructions = method.getMethodInfo().getCodeAttribute.iterator()
     val constPool = method.getMethodInfo.getConstPool
+
+    {
+      val i = method.getMethodInfo().getCodeAttribute.iterator()
+      while (i.hasNext) {
+        println(InstructionPrinter.instructionString(i, i.next(), constPool))
+      }
+    }
+
 
     def ldc(pos: Int): Any = _ldc(pos, instructions.byteAt(pos + 1))
     def ldcw(pos: Int): Any = _ldc(pos, instructions.u16bitAt(pos + 1))
     def _ldc(pos: Int, cp_index: Int): Any = {
       constPool.getTag(cp_index) match {
+        case ConstPool.CONST_Double => constPool.getDoubleInfo(cp_index)
         case ConstPool.CONST_Integer => constPool.getIntegerInfo(cp_index)
         case ConstPool.CONST_Long => constPool.getLongInfo(cp_index)
       }
@@ -87,8 +97,12 @@ object ClosureToExpressionConverter {
 
       val stackGrow: Int = {
         op match {
-          case INVOKEVIRTUAL => getInvokeVirtualTarget(pos).getParameterTypes.length + 1
+          case INVOKEVIRTUAL => -1 * getInvokeVirtualTarget(pos).getParameterTypes.length
+          case INVOKEINTERFACE => -1 * getInvokeInterfaceTarget(pos).getParameterTypes.length
           case LDC2_W => 1 // TODO: in reality, this pushes 2; this is a hack.
+          case LCONST_0 | LCONST_1 => 1 // hack
+          case LADD | LMUL => -1
+          case I2L | I2D => 0 // hack
           case _ => STACK_GROW(op)
         }
       }
@@ -102,21 +116,25 @@ object ClosureToExpressionConverter {
         case ALOAD_0 => children(0)
         case ALOAD_1 => children(1)
         case ALOAD_2 => children(2)
+        case BIPUSH => Literal(instructions.byteAt(pos + 1)) // TODO: byte must be sign-extended into an integer value?
         case ICONST_0 => Literal(0)
         case ICONST_1 => Literal(1)
         case ICONST_2 => Literal(2)
+        case LCONST_0 => Literal(0L)
         case ILOAD_0 => children(0)
         case ILOAD_1 => children(1)
         case ILOAD_2 => children(2)
+        case I2D => Cast(stackHead, DoubleType)
         case I2L => Cast(stackHead, LongType)
-        case IMUL => Multiply(stackHeadMinus1, stackHead)
-        case IADD | LADD => Add(stackHeadMinus1, stackHead)
+        case IMUL | LMUL => Multiply(stackHeadMinus1, stackHead)
+        case IADD | DADD | LADD => Add(stackHeadMinus1, stackHead)
         case LDC => Literal(ldc(pos))
         case LDC2_W => Literal(ldcw(pos))           // Pushes two words onto the stack, but we're going to only push one
         case INVOKEINTERFACE =>
           val target = getInvokeInterfaceTarget(pos)
+          val getters = Set("getInt", "getLong")
           if (target.getDeclaringClass.getName == classOf[Row].getName) {
-            if (target.getName == "getInt") {
+            if (getters.contains(target.getName)) {
               GetStructField(stackHeadMinus1, stackHead.asInstanceOf[Literal].value.asInstanceOf[Int])
             } else {
               return None
@@ -136,7 +154,7 @@ object ClosureToExpressionConverter {
               println("ERROR: Problem analyzing method call")
               return None
           }
-        case IRETURN | LRETURN =>
+        case DRETURN | IRETURN | LRETURN =>
           return Some(exprs(stack(stackHeight)))
         case _ =>
           println(s"ERROR: Unknown opcode $mnemonic")
@@ -177,7 +195,7 @@ object ClosureToExpressionConverter {
     }.headOption
   }
 
-  val x = (row: Row) => (row.getInt(0) + 1L * 2)
+  val x = (row: Row) => (row.getInt(0) > 63)
 
   def main(args: Array[String]): Unit = {
     println("THE RESULT OF EXPR IS:\n" + convert(x).getOrElse("ERROR!"))
