@@ -19,7 +19,7 @@
 
 set -e
 
-VALID_VERSIONS=( 2.10 2.11 )
+VALID_VERSIONS=( 2.10 2.11 2.12 )
 
 usage() {
   echo "Usage: $(basename $0) [-h|--help] <version>
@@ -44,11 +44,7 @@ check_scala_version() {
 
 check_scala_version "$TO_VERSION"
 
-if [ $TO_VERSION = "2.11" ]; then
-  FROM_VERSION="2.10"
-else
-  FROM_VERSION="2.11"
-fi
+FROM_VERSION=$(grep -m1 -o '<scala.binary.version>.*</scala.binary.version>' pom.xml | grep -o -e '2[^<]\+')
 
 sed_i() {
   sed -e "$1" "$2" > "$2.tmp" && mv "$2.tmp" "$2"
