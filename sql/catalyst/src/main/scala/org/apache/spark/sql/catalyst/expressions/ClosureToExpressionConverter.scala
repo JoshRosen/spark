@@ -32,30 +32,32 @@ object ClosureToExpressionConverter {
   val analyzer = new Analyzer()
   val classPool = ClassPool.getDefault
 
-  def analyzeMethod(method : CtMethod): Option[Expression] = {
+  def analyzeMethod(method: CtMethod, children: Seq[Expression]): Option[Expression] = {
     println ("-" * 80)
     println (method.getName)
     println ("-" * 80)
 
     val exprs = mutable.Map[String, Expression]()
+    def stack(i: Int) = s"stack$i"
 
-    val frames = analyzer.analyze(method)
+
     val instructions = method.getMethodInfo().getCodeAttribute.iterator()
-    val cp = method.getMethodInfo.getConstPool
+    val constPool = method.getMethodInfo.getConstPool
+
     var stackHeight = 0
+
     while (instructions.hasNext) {
       val pos = instructions.next()
       val op = instructions.byteAt(pos)
-      val mnemonic = InstructionPrinter.instructionString(instructions, pos, cp)
+      val mnemonic = InstructionPrinter.instructionString(instructions, pos, constPool)
       println("*" * 20 + " " + mnemonic + s" (stack = $stackHeight) " + "*" * 20)
-      def stack(i: Int) = s"stack$i"
 
       val stackGrow: Int = {
         op match {
           case Opcode.INVOKEVIRTUAL => {
-            val mrClassName = cp.getMethodrefClassName(instructions.u16bitAt(pos + 1))
-            val mrMethName = cp.getMethodrefName(instructions.u16bitAt(pos + 1))
-            val mrDesc = cp.getMethodrefType(instructions.u16bitAt(pos + 1))
+            val mrClassName = constPool.getMethodrefClassName(instructions.u16bitAt(pos + 1))
+            val mrMethName = constPool.getMethodrefName(instructions.u16bitAt(pos + 1))
+            val mrDesc = constPool.getMethodrefType(instructions.u16bitAt(pos + 1))
             val ctClass = classPool.get(mrClassName)
             val ctMethod = ctClass.getMethod(mrMethName, mrDesc)
             val numParameters = ctMethod.getParameterTypes.length
@@ -68,31 +70,36 @@ object ClosureToExpressionConverter {
 
       op match {
         case Opcode.ALOAD_0 =>
-          exprs(targetVarName) = UnresolvedAttribute("local0")
-        case Opcode.ALOAD_1 =>
-          exprs(targetVarName) = UnresolvedAttribute("local1")
-        case Opcode.ILOAD_1 =>
-          exprs(targetVarName) = UnresolvedAttribute("local1")
+          exprs(targetVarName) = children(0)
+        case Opcode.ALOAD_1  | Opcode.ILOAD_1 =>
+          exprs(targetVarName) = children(1)
         case Opcode.ICONST_1 =>
           exprs(targetVarName) = Literal(1)
+        case Opcode.ICONST_2 =>
+          exprs(targetVarName) = Literal(2)
+        case Opcode.IMUL =>
+          exprs(targetVarName) = Multiply(exprs(stack(stackHeight - 1)), exprs(stack(stackHeight)))
         case Opcode.IADD =>
           exprs(targetVarName) = Add(exprs(stack(stackHeight - 1)), exprs(stack(stackHeight)))
 //          println(s"stack$stackHeight = stack${stackHeight - 1} + stack${stackHeight}")
         case Opcode.LDC =>
           val cp_index = instructions.byteAt(pos + 1)
-          val value = cp.getTag(cp_index) match {
-            case ConstPool.CONST_Integer => cp.getIntegerInfo(cp_index)
+          val value = constPool.getTag(cp_index) match {
+            case ConstPool.CONST_Integer => constPool.getIntegerInfo(cp_index)
           }
+          exprs(targetVarName) = Literal(value)
 //          println(s"stack$stackHeight = $value")
         case Opcode.INVOKEVIRTUAL =>
-          val mrClassName = cp.getMethodrefClassName(instructions.u16bitAt(pos + 1))
-          val mrMethName = cp.getMethodrefName(instructions.u16bitAt(pos + 1))
-          val mrDesc = cp.getMethodrefType(instructions.u16bitAt(pos + 1))
+          val mrClassName = constPool.getMethodrefClassName(instructions.u16bitAt(pos + 1))
+          val mrMethName = constPool.getMethodrefName(instructions.u16bitAt(pos + 1))
+          val mrDesc = constPool.getMethodrefType(instructions.u16bitAt(pos + 1))
           val ctClass = classPool.get(mrClassName)
           val ctMethod = ctClass.getMethod(mrMethName, mrDesc)
           val numParameters = ctMethod.getParameterTypes.length
           println(s"stack$stackHeight = ($mrClassName stack${stackHeight - numParameters}).$mrMethName(${(1 to numParameters).map(i => s"stack${stackHeight - i}").mkString(", ")})")
-          analyzeMethod(ctMethod) match {
+          val _this = UnresolvedAttribute("this")
+          val attributes = Seq(_this) ++ (stackHeight - numParameters to stackHeight).map(i => exprs(stack(i)))
+          analyzeMethod(ctMethod, attributes) match {
             case Some(expr) => exprs(targetVarName) = expr
             case None =>
               println("ERROR: Problem analyzing method call")
@@ -125,11 +132,14 @@ object ClosureToExpressionConverter {
     val ctClass = classPool.get(closure.getClass.getName)
     val applyMethods = ctClass.getMethods.filter(_.getName == "apply")
     applyMethods.flatMap { method =>
-      analyzeMethod(method)
+      // TODO: static methods need to be done specially
+      val _this = UnresolvedAttribute("this")
+      val attributes = (1 to method.getParameterTypes.length).map(i => UnresolvedAttribute(s"attr$i"))
+      analyzeMethod(method, Seq(_this) ++ attributes)
     }.headOption
   }
 
-  val x = (y: Int) => y + 1 // + y + 342424
+  val x = (y: Int) => (y + 1 + y) * 2 + 342424 * y
 
   def main(args: Array[String]): Unit = {
     println("THE RESULT OF EXPR IS:\n" + convert(x).getOrElse("ERROR!"))
