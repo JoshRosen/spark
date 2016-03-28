@@ -15,11 +15,14 @@
  * limitations under the License.
  */
 
+// scalastyle:off
+// TODO: fix
+
 package org.apache.spark.sql.catalyst.expressions
 
 import scala.collection.mutable
 
-import javassist.{CtMethod, ClassPool}
+import javassist.{Modifier, ClassPool, CtMethod}
 import javassist.bytecode.Opcode._
 import javassist.bytecode.{ConstPool, InstructionPrinter}
 import javassist.bytecode.analysis.Analyzer
@@ -34,6 +37,7 @@ object ClosureToExpressionConverter {
   def analyzeMethod(method: CtMethod, children: Seq[Expression]): Option[Expression] = {
     println ("-" * 80)
     println (method.getName)
+    println(children)
     println ("-" * 80)
 
     val exprs = mutable.Map[String, Expression]()
@@ -97,8 +101,8 @@ object ClosureToExpressionConverter {
           val ctMethod = ctClass.getMethod(mrMethName, mrDesc)
           val numParameters = ctMethod.getParameterTypes.length
           println(s"stack$stackHeight = ($mrClassName stack${stackHeight - numParameters}).$mrMethName(${(1 to numParameters).map(i => s"stack${stackHeight - i}").mkString(", ")})")
-          val _this = UnresolvedAttribute("this")
-          val attributes = Seq(_this) ++ (stackHeight - numParameters to stackHeight).map(i => exprs(stack(i)))
+          val attributes = (stackHeight - numParameters to stackHeight).map(i => exprs(stack(i)))
+          assert(attributes.length == numParameters + 1)
           analyzeMethod(ctMethod, attributes) match {
             case Some(expr) => expr
             case None =>
@@ -126,15 +130,21 @@ object ClosureToExpressionConverter {
     throw new Exception("oh no!")
   }
 
-  def convert[T, R](closure: Object): Option[Expression] = {
+  def isStatic(method: CtMethod): Boolean = Modifier.isStatic(method.getModifiers)
 
+  // TODO: handle argument types
+  def convert(closure: Object): Option[Expression] = {
     val ctClass = classPool.get(closure.getClass.getName)
     val applyMethods = ctClass.getMethods.filter(_.getName == "apply")
+    // Take the first apply() method which can be resolved to an expression
     applyMethods.flatMap { method =>
-      // TODO: static methods need to be done specially
-      val _this = UnresolvedAttribute("this")
+      println(" \n  " * 10)
       val attributes = (1 to method.getParameterTypes.length).map(i => UnresolvedAttribute(s"attr$i"))
-      analyzeMethod(method, Seq(_this) ++ attributes)
+      if (isStatic(method)) {
+        analyzeMethod(method, attributes)
+      } else {
+        analyzeMethod(method, Seq(UnresolvedAttribute("this")) ++ attributes)
+      }
     }.headOption
   }
 
