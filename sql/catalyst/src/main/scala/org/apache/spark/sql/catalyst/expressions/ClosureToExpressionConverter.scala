@@ -21,7 +21,7 @@
 package org.apache.spark.sql.catalyst.expressions
 
 import org.apache.spark.sql.Row
-import org.apache.spark.sql.types.{DoubleType, LongType, IntegerType}
+import org.apache.spark.sql.types.{StructType, DoubleType, LongType}
 
 import scala.collection.mutable
 
@@ -32,8 +32,6 @@ import javassist.bytecode.analysis.Analyzer
 
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 
-import scala.tools.scalap.scalax.rules.scalasig.Children
-
 object ClosureToExpressionConverter {
 
   val analyzer = new Analyzer()
@@ -41,6 +39,7 @@ object ClosureToExpressionConverter {
 
   def analyzeMethod(
       method: CtMethod,
+      schema: StructType,
       children: Seq[Expression],
       initExprs: Map[String, Expression] = Map.empty,
       stackHeightAtEntry: Int = 0,
@@ -135,7 +134,7 @@ object ClosureToExpressionConverter {
         case ILOAD_2 => children(2)
         case GOTO =>
           val target = instructions.s16bitAt(pos + 1) + pos
-          return analyzeMethod(method, children, exprs.toMap, stackHeight, target)
+          return analyzeMethod(method, schema, children, exprs.toMap, stackHeight, target)
         case I2D => Cast(stackHead, DoubleType)
         case I2L => Cast(stackHead, LongType)
         case IMUL | LMUL => Multiply(stackHeadMinus1, stackHead)
@@ -144,12 +143,19 @@ object ClosureToExpressionConverter {
         case LDC2_W => Literal(ldcw(pos))           // Pushes two words onto the stack, but we're going to only push one
         case IF_ICMPLE =>
           val trueJumpTarget = instructions.s16bitAt(pos + 1) + pos
-          val trueExpression = analyzeMethod(method, children, exprs.toMap, stackHeight + stackGrow, trueJumpTarget)
-          println("ANALYZING FALASE")
-          val falseExpression = analyzeMethod(method, children, exprs.toMap, stackHeight + stackGrow, instructions.next())
-          println(s"Done analzing false; it is $falseExpression")
+          val trueExpression = analyzeMethod(method, schema, children, exprs.toMap, stackHeight + stackGrow, trueJumpTarget)
+          val falseExpression = analyzeMethod(method, schema, children, exprs.toMap, stackHeight + stackGrow, instructions.next())
           if (trueExpression.isDefined && falseExpression.isDefined) {
             return Some(CaseWhen(Seq(LessThanOrEqual(stackHeadMinus1, stackHead) -> trueExpression.get), falseExpression.get))
+          } else {
+            return None
+          }
+        case IF_ICMPNE =>
+          val trueJumpTarget = instructions.s16bitAt(pos + 1) + pos
+          val trueExpression = analyzeMethod(method, schema, children, exprs.toMap, stackHeight + stackGrow, trueJumpTarget)
+          val falseExpression = analyzeMethod(method, schema, children, exprs.toMap, stackHeight + stackGrow, instructions.next())
+          if (trueExpression.isDefined && falseExpression.isDefined) {
+            return Some(CaseWhen(Seq(Not(EqualTo(stackHeadMinus1, stackHead)) -> trueExpression.get), falseExpression.get))
           } else {
             return None
           }
@@ -158,7 +164,8 @@ object ClosureToExpressionConverter {
           val getters = Set("getInt", "getLong")
           if (target.getDeclaringClass.getName == classOf[Row].getName) {
             if (getters.contains(target.getName)) {
-              GetStructField(stackHeadMinus1, stackHead.asInstanceOf[Literal].value.asInstanceOf[Int])
+              val fieldNumber = stackHead.asInstanceOf[Literal].value.asInstanceOf[Int]
+              UnresolvedAttribute(schema.fields(fieldNumber).name)
             } else {
               return None
             }
@@ -171,14 +178,13 @@ object ClosureToExpressionConverter {
           val numParameters = target.getParameterTypes.length
           val attributes = (stackHeight - numParameters to stackHeight).map(i => exprs(stack(i)))
           assert(attributes.length == numParameters + 1)
-          analyzeMethod(target, attributes) match {
+          analyzeMethod(target, schema, attributes) match {
             case Some(expr) => expr
             case None =>
               println("ERROR: Problem analyzing method call")
               return None
           }
         case DRETURN | IRETURN | LRETURN =>
-          println("IRETURN!")
           return Some(exprs(stack(stackHeight)))
         case _ =>
           println(s"ERROR: Unknown opcode $mnemonic")
@@ -203,7 +209,7 @@ object ClosureToExpressionConverter {
 
   // TODO: handle argument types
   // For now, this assumes f: Row => Expr
-  def convert(closure: Object): Option[Expression] = {
+  def convert(closure: Object, schema: StructType): Option[Expression] = {
     val ctClass = classPool.get(closure.getClass.getName)
     val applyMethods = ctClass.getMethods.filter(_.getName == "apply")
     // Take the first apply() method which can be resolved to an expression
@@ -212,16 +218,16 @@ object ClosureToExpressionConverter {
       assert(method.getParameterTypes.length == 1)
       val attributes = Seq(UnresolvedAttribute("inputRow"))
         if (isStatic(method)) {
-        analyzeMethod(method, attributes)
+        analyzeMethod(method, schema, attributes)
       } else {
-        analyzeMethod(method, Seq(UnresolvedAttribute("this")) ++ attributes)
+        analyzeMethod(method, schema, Seq(UnresolvedAttribute("this")) ++ attributes)
       }
     }.headOption
   }
 
   val x = (row: Row) => (row.getInt(0) * 2 > 63)
 
-  def main(args: Array[String]): Unit = {
-    println("THE RESULT OF EXPR IS:\n" + convert(x).getOrElse("ERROR!"))
-  }
+//  def main(args: Array[String]): Unit = {
+//    println("THE RESULT OF EXPR IS:\n" + convert(x).getOrElse("ERROR!"))
+//  }
 }

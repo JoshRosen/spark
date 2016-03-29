@@ -201,6 +201,13 @@ class DatasetSuite extends QueryTest with SharedSQLContext {
       ("b", 2))
   }
 
+  test("filter with closure") {
+    val ds = Seq(("a", 1), ("b", 2), ("c", 3)).toDF()
+    checkDataset(
+      ds.filter(_.getInt(1) == 2),
+      Row("b", 2))
+  }
+
   test("foreach") {
     val ds = Seq(("a", 1), ("b", 2), ("c", 3)).toDS()
     val acc = sparkContext.accumulator(0)

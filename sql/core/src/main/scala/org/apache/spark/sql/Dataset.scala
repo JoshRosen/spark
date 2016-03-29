@@ -1816,7 +1816,16 @@ class Dataset[T] private[sql](
    * @since 1.6.0
    */
   @Experimental
-  def filter(func: T => Boolean): Dataset[T] = mapPartitions(_.filter(func))
+  def filter(func: T => Boolean): Dataset[T] = {
+    val res = ClosureToExpressionConverter.convert(func, schema).map { expr =>
+      println(s"inferred expression is $expr")
+      where(Column.apply(Cast(expr, BooleanType)))
+    }.getOrElse {
+      mapPartitions(_.filter(func))
+    }
+    println(res.queryExecution)
+    res
+  }
 
   /**
    * :: Experimental ::
