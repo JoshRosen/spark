@@ -32,25 +32,32 @@ import javassist.bytecode.analysis.Analyzer
 
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 
+import scala.tools.scalap.scalax.rules.scalasig.Children
+
 object ClosureToExpressionConverter {
 
   val analyzer = new Analyzer()
   val classPool = ClassPool.getDefault
 
-  // TODO: multiple stack slots for long / double values
-
-  def analyzeMethod(method: CtMethod, children: Seq[Expression]): Option[Expression] = {
+  def analyzeMethod(
+      method: CtMethod,
+      children: Seq[Expression],
+      initExprs: Map[String, Expression] = Map.empty,
+      stackHeightAtEntry: Int = 0,
+      pos: Int = 0): Option[Expression] = {
     println ("-" * 80)
     println (method.getName)
     println(children)
     println ("-" * 80)
 
     val exprs = mutable.Map[String, Expression]()
+    exprs ++= initExprs
     def stack(i: Int) = s"stack$i"
 
 
 
     val instructions = method.getMethodInfo().getCodeAttribute.iterator()
+    instructions.move(pos)
     val constPool = method.getMethodInfo.getConstPool
 
     {
@@ -87,7 +94,7 @@ object ClosureToExpressionConverter {
       ctClass.getMethod(mrMethName, mrDesc)
     }
 
-    var stackHeight = 0
+    var stackHeight = stackHeightAtEntry
 
     while (instructions.hasNext) {
       val pos = instructions.next()
@@ -120,16 +127,32 @@ object ClosureToExpressionConverter {
         case ICONST_0 => Literal(0)
         case ICONST_1 => Literal(1)
         case ICONST_2 => Literal(2)
+        case ICONST_3 => Literal(3)
+        case ICONST_4 => Literal(4)
         case LCONST_0 => Literal(0L)
         case ILOAD_0 => children(0)
         case ILOAD_1 => children(1)
         case ILOAD_2 => children(2)
+        case GOTO =>
+          val target = instructions.s16bitAt(pos + 1) + pos
+          return analyzeMethod(method, children, exprs.toMap, stackHeight, target)
         case I2D => Cast(stackHead, DoubleType)
         case I2L => Cast(stackHead, LongType)
         case IMUL | LMUL => Multiply(stackHeadMinus1, stackHead)
         case IADD | DADD | LADD => Add(stackHeadMinus1, stackHead)
         case LDC => Literal(ldc(pos))
         case LDC2_W => Literal(ldcw(pos))           // Pushes two words onto the stack, but we're going to only push one
+        case IF_ICMPLE =>
+          val trueJumpTarget = instructions.s16bitAt(pos + 1) + pos
+          val trueExpression = analyzeMethod(method, children, exprs.toMap, stackHeight + stackGrow, trueJumpTarget)
+          println("ANALYZING FALASE")
+          val falseExpression = analyzeMethod(method, children, exprs.toMap, stackHeight + stackGrow, instructions.next())
+          println(s"Done analzing false; it is $falseExpression")
+          if (trueExpression.isDefined && falseExpression.isDefined) {
+            return Some(CaseWhen(Seq(LessThanOrEqual(stackHeadMinus1, stackHead) -> trueExpression.get), falseExpression.get))
+          } else {
+            return None
+          }
         case INVOKEINTERFACE =>
           val target = getInvokeInterfaceTarget(pos)
           val getters = Set("getInt", "getLong")
@@ -155,6 +178,7 @@ object ClosureToExpressionConverter {
               return None
           }
         case DRETURN | IRETURN | LRETURN =>
+          println("IRETURN!")
           return Some(exprs(stack(stackHeight)))
         case _ =>
           println(s"ERROR: Unknown opcode $mnemonic")
@@ -195,7 +219,7 @@ object ClosureToExpressionConverter {
     }.headOption
   }
 
-  val x = (row: Row) => (row.getInt(0) > 63)
+  val x = (row: Row) => (row.getInt(0) * 2 > 63)
 
   def main(args: Array[String]): Unit = {
     println("THE RESULT OF EXPR IS:\n" + convert(x).getOrElse("ERROR!"))
