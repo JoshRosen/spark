@@ -778,6 +778,15 @@ object SimplifyConditionals extends Rule[LogicalPlan] with PredicateHelper {
       case If(TrueLiteral, trueValue, _) => trueValue
       case If(FalseLiteral, _, falseValue) => falseValue
 
+      // If an If expression's result is equivalent to the value of the If condition itself,
+      // then replace the If expression directly by the condition.
+      case If(condition, TrueLiteral, FalseLiteral) => condition
+      case If(condition, FalseLiteral, TrueLiteral) => Not(condition)
+
+      // Convert simple CaseWhen conditions into Ifs
+      case CaseWhen(Seq((condition, trueValue)), Some(falseValue)) =>
+        If(condition, trueValue, falseValue)
+
       case e @ CaseWhen(branches, elseValue) if branches.exists(_._1 == FalseLiteral) =>
         // If there are branches that are always false, remove them.
         // If there are no more branches left, just use the else value.

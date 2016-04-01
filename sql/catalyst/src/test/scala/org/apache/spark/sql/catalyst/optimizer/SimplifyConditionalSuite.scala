@@ -84,4 +84,20 @@ class SimplifyConditionalSuite extends PlanTest with PredicateHelper {
       CaseWhen(normalBranch :: trueBranch :: normalBranch :: Nil, None),
       CaseWhen(normalBranch :: trueBranch :: normalBranch :: Nil, None))
   }
+
+  test("replace simple CaseWhen with If") {
+    assertEquivalent(
+      CaseWhen((NonFoldableLiteral(true), Literal(10)) :: Nil, Some(Literal(30))),
+      If(NonFoldableLiteral(true), Literal(10), Literal(30)))
+  }
+
+  test("replace If by condition when trueExpr == true and falseExpr == false") {
+    assertEquivalent(
+      If(NonFoldableLiteral(true), TrueLiteral, FalseLiteral),
+      NonFoldableLiteral(true))
+
+    assertEquivalent(
+      If(NonFoldableLiteral(true), FalseLiteral, TrueLiteral),
+      Not(NonFoldableLiteral(true)))
+  }
 }
