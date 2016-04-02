@@ -144,6 +144,30 @@ object ClosureToExpressionConverter {
         }
       }
 
+      def analyzeIF(
+          compOp: (Expression, Expression) => Predicate): Option[Expression] = {
+        val trueJumpTarget = instructions.s16bitAt(pos + 1) + pos
+        val trueExpression = analyzeMethod(
+          method,
+          schema,
+          children,
+          exprs.toMap,
+          stackHeight + stackGrow,
+          trueJumpTarget)
+        val falseExpression = analyzeMethod(
+          method,
+          schema,
+          children,
+          exprs.toMap,
+          stackHeight + stackGrow,
+          instructions.next())
+        if (trueExpression.isDefined && falseExpression.isDefined) {
+          Some(If(compOp(stackHead, Literal(0)), trueExpression.get, falseExpression.get))
+        } else {
+          None
+        }
+      }
+
       exprs(targetVarName) = op match {
         case ALOAD_0 => children(0)
         case ALOAD_1 => children(1)
@@ -169,13 +193,16 @@ object ClosureToExpressionConverter {
         case LDC2_W => Literal(ldcw(pos)) // Pushes two words onto the stack, but we're going to only push one
         case IF_ICMPLE => return analyzeCMP(LessThanOrEqual)
         case IF_ICMPNE => return analyzeCMP((e1, e2) => Not(EqualTo(e1, e2)))
+        case IFNE => return analyzeIF((e1, e2) => Not(EqualTo(e1, e2)))
         case INVOKEINTERFACE =>
           val target = getInvokeInterfaceTarget(pos)
-          val getters = Set("getInt", "getLong")
           if (target.getDeclaringClass.getName == classOf[Row].getName) {
-            if (getters.contains(target.getName)) {
+            if (Set("getInt", "getLong").contains(target.getName)) {
               val fieldNumber = stackHead.asInstanceOf[Literal].value.asInstanceOf[Int]
               NPEOnNull(UnresolvedAttribute(schema.fields(fieldNumber).name))
+            } else if (target.getName == "isNullAt") {
+              val fieldNumber = stackHead.asInstanceOf[Literal].value.asInstanceOf[Int]
+              IsNull(UnresolvedAttribute(schema.fields(fieldNumber).name))
             } else {
               return None
             }
@@ -254,7 +281,7 @@ case class NPEOnNull(child: Expression) extends UnaryExpression with NonSQLExpre
     s"""
       ${eval.code}
       if(${eval.isNull}) { throw new NullPointerException(); }
-      ${eval.value}
+      ${ctx.javaType(dataType)} ${ev.value} = ${eval.value};
       """
   }
 }
