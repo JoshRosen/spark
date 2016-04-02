@@ -21,7 +21,9 @@
 package org.apache.spark.sql.catalyst.expressions
 
 import org.apache.spark.sql.Row
-import org.apache.spark.sql.types.{StructType, DoubleType, LongType}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.codegen.{ExprCode, CodegenContext}
+import org.apache.spark.sql.types._
 
 import scala.collection.mutable
 
@@ -44,10 +46,10 @@ object ClosureToExpressionConverter {
       initExprs: Map[String, Expression] = Map.empty,
       stackHeightAtEntry: Int = 0,
       pos: Int = 0): Option[Expression] = {
-    println ("-" * 80)
-    println (method.getName)
+    println("-" * 80)
+    println(method.getName)
     println(children)
-    println ("-" * 80)
+    println("-" * 80)
 
     val exprs = mutable.Map[String, Expression]()
     exprs ++= initExprs
@@ -140,13 +142,13 @@ object ClosureToExpressionConverter {
         case IMUL | LMUL => Multiply(stackHeadMinus1, stackHead)
         case IADD | DADD | LADD => Add(stackHeadMinus1, stackHead)
         case LDC => Literal(ldc(pos))
-        case LDC2_W => Literal(ldcw(pos))           // Pushes two words onto the stack, but we're going to only push one
+        case LDC2_W => Literal(ldcw(pos)) // Pushes two words onto the stack, but we're going to only push one
         case IF_ICMPLE =>
           val trueJumpTarget = instructions.s16bitAt(pos + 1) + pos
           val trueExpression = analyzeMethod(method, schema, children, exprs.toMap, stackHeight + stackGrow, trueJumpTarget)
           val falseExpression = analyzeMethod(method, schema, children, exprs.toMap, stackHeight + stackGrow, instructions.next())
           if (trueExpression.isDefined && falseExpression.isDefined) {
-            return Some(CaseWhen(Seq(LessThanOrEqual(stackHeadMinus1, stackHead) -> trueExpression.get), falseExpression.get))
+            return Some(If(Not(LessThanOrEqual(stackHeadMinus1, stackHead)), trueExpression.get, falseExpression.get))
           } else {
             return None
           }
@@ -155,7 +157,7 @@ object ClosureToExpressionConverter {
           val trueExpression = analyzeMethod(method, schema, children, exprs.toMap, stackHeight + stackGrow, trueJumpTarget)
           val falseExpression = analyzeMethod(method, schema, children, exprs.toMap, stackHeight + stackGrow, instructions.next())
           if (trueExpression.isDefined && falseExpression.isDefined) {
-            return Some(CaseWhen(Seq(Not(EqualTo(stackHeadMinus1, stackHead)) -> trueExpression.get), falseExpression.get))
+            return Some(If(Not(EqualTo(stackHeadMinus1, stackHead)), trueExpression.get, falseExpression.get))
           } else {
             return None
           }
@@ -165,7 +167,7 @@ object ClosureToExpressionConverter {
           if (target.getDeclaringClass.getName == classOf[Row].getName) {
             if (getters.contains(target.getName)) {
               val fieldNumber = stackHead.asInstanceOf[Literal].value.asInstanceOf[Int]
-              UnresolvedAttribute(schema.fields(fieldNumber).name)
+              NPEOnNull(UnresolvedAttribute(schema.fields(fieldNumber).name))
             } else {
               return None
             }
@@ -195,12 +197,6 @@ object ClosureToExpressionConverter {
       exprs.toSeq.sortBy(_._1).foreach { case (label, value) =>
         println(s"    $label = $value")
       }
-//      if (op == Opcode.INVOKEVIRTUAL) {
-
-//        println(InstructionPrinter.instructionString(instructions, pos, cp))
-//      } else {
-//        println(InstructionPrinter.instructionString(instructions, pos, cp))
-//      }
     }
     throw new Exception("oh no!")
   }
@@ -217,7 +213,7 @@ object ClosureToExpressionConverter {
       println(" \n  " * 10)
       assert(method.getParameterTypes.length == 1)
       val attributes = Seq(UnresolvedAttribute("inputRow"))
-        if (isStatic(method)) {
+      if (isStatic(method)) {
         analyzeMethod(method, schema, attributes)
       } else {
         analyzeMethod(method, schema, Seq(UnresolvedAttribute("this")) ++ attributes)
@@ -225,9 +221,32 @@ object ClosureToExpressionConverter {
     }.headOption
   }
 
-  val x = (row: Row) => (row.getInt(0) * 2 > 63)
+  def convertFilter(closure: Object, schema: StructType): Option[Expression] = {
+    convert(closure, schema).map { expr => Cast(expr, BooleanType) }
+  }
 
-//  def main(args: Array[String]): Unit = {
-//    println("THE RESULT OF EXPR IS:\n" + convert(x).getOrElse("ERROR!"))
-//  }
+}
+
+/**
+ * An expression that throws NullPointerException on null input values.
+ */
+case class NPEOnNull(child: Expression) extends UnaryExpression with NonSQLExpression {
+  override def nullable: Boolean = false
+
+  override def dataType: DataType = child.dataType
+
+  override def eval(input: InternalRow): Any = {
+    val result = child.eval(input)
+    if (result == null) throw new NullPointerException
+    result
+  }
+
+  override def genCode(ctx: CodegenContext, ev: ExprCode): String = {
+    val eval = child.gen(ctx)
+    s"""
+      ${eval.code}
+      if(${eval.isNull}) { throw new NullPointerException(); }
+      ${eval.value}
+      """
+  }
 }
