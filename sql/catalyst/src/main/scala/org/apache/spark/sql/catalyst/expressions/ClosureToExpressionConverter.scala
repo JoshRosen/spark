@@ -120,6 +120,30 @@ object ClosureToExpressionConverter {
       def stackHeadMinus1 = exprs(stack(stackHeight - 1))
       def stackHead = exprs(stack(stackHeight))
 
+      def analyzeCMP(
+          compOp: (Expression, Expression) => Predicate): Option[Expression] = {
+        val trueJumpTarget = instructions.s16bitAt(pos + 1) + pos
+        val trueExpression = analyzeMethod(
+          method,
+          schema,
+          children,
+          exprs.toMap,
+          stackHeight + stackGrow,
+          trueJumpTarget)
+        val falseExpression = analyzeMethod(
+          method,
+          schema,
+          children,
+          exprs.toMap,
+          stackHeight + stackGrow,
+          instructions.next())
+        if (trueExpression.isDefined && falseExpression.isDefined) {
+          Some(If(compOp(stackHeadMinus1, stackHead), trueExpression.get, falseExpression.get))
+        } else {
+          None
+        }
+      }
+
       exprs(targetVarName) = op match {
         case ALOAD_0 => children(0)
         case ALOAD_1 => children(1)
@@ -143,24 +167,8 @@ object ClosureToExpressionConverter {
         case IADD | DADD | LADD => Add(stackHeadMinus1, stackHead)
         case LDC => Literal(ldc(pos))
         case LDC2_W => Literal(ldcw(pos)) // Pushes two words onto the stack, but we're going to only push one
-        case IF_ICMPLE =>
-          val trueJumpTarget = instructions.s16bitAt(pos + 1) + pos
-          val trueExpression = analyzeMethod(method, schema, children, exprs.toMap, stackHeight + stackGrow, trueJumpTarget)
-          val falseExpression = analyzeMethod(method, schema, children, exprs.toMap, stackHeight + stackGrow, instructions.next())
-          if (trueExpression.isDefined && falseExpression.isDefined) {
-            return Some(If(Not(LessThanOrEqual(stackHeadMinus1, stackHead)), trueExpression.get, falseExpression.get))
-          } else {
-            return None
-          }
-        case IF_ICMPNE =>
-          val trueJumpTarget = instructions.s16bitAt(pos + 1) + pos
-          val trueExpression = analyzeMethod(method, schema, children, exprs.toMap, stackHeight + stackGrow, trueJumpTarget)
-          val falseExpression = analyzeMethod(method, schema, children, exprs.toMap, stackHeight + stackGrow, instructions.next())
-          if (trueExpression.isDefined && falseExpression.isDefined) {
-            return Some(If(Not(EqualTo(stackHeadMinus1, stackHead)), trueExpression.get, falseExpression.get))
-          } else {
-            return None
-          }
+        case IF_ICMPLE => return analyzeCMP(LessThanOrEqual)
+        case IF_ICMPNE => return analyzeCMP((e1, e2) => Not(EqualTo(e1, e2)))
         case INVOKEINTERFACE =>
           val target = getInvokeInterfaceTarget(pos)
           val getters = Set("getInt", "getLong")
