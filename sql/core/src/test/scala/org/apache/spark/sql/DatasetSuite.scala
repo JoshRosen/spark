@@ -201,11 +201,17 @@ class DatasetSuite extends QueryTest with SharedSQLContext {
       ("b", 2))
   }
 
-  test("filter with closure") {
+  test("filter DataSet[Row] with closure") {
     val ds = Seq[(String, Integer)](("a", 1), ("b", 2), ("c", 3), (null, null)).toDF()
     checkDataset(
       ds.filter(r => !r.isNullAt(1) && r.getInt(1) == 2),
       Row("b", 2))
+  }
+
+  test("filter DataSet[Tuple2] with closure") {
+    // TODO: verify output
+    val ds = Seq[(String, Int)](("a", 1), ("b", 2), ("c", 3)).toDS()
+    ds.filter(r => r._2 == 2).queryExecution
   }
 
   test("foreach") {

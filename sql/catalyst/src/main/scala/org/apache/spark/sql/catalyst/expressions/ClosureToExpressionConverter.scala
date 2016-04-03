@@ -55,8 +55,6 @@ object ClosureToExpressionConverter {
     exprs ++= initExprs
     def stack(i: Int) = s"stack$i"
 
-
-
     val instructions = method.getMethodInfo().getCodeAttribute.iterator()
     instructions.move(pos)
     val constPool = method.getMethodInfo.getConstPool
@@ -108,6 +106,7 @@ object ClosureToExpressionConverter {
           case INVOKEVIRTUAL => -1 * getInvokeVirtualTarget(pos).getParameterTypes.length
           case INVOKEINTERFACE => -1 * getInvokeInterfaceTarget(pos).getParameterTypes.length
           case LDC2_W => 1 // TODO: in reality, this pushes 2; this is a hack.
+          case GETFIELD => 1 // hack
           case LCONST_0 | LCONST_1 => 1 // hack
           case LADD | LMUL => -1
           case I2L | I2D => 0 // hack
@@ -215,11 +214,29 @@ object ClosureToExpressionConverter {
           val numParameters = target.getParameterTypes.length
           val attributes = (stackHeight - numParameters to stackHeight).map(i => exprs(stack(i)))
           assert(attributes.length == numParameters + 1)
-          analyzeMethod(target, schema, attributes) match {
-            case Some(expr) => expr
-            case None =>
-              println("ERROR: Problem analyzing method call")
+          if (target.getDeclaringClass.getName == classOf[Tuple2[_, _]].getName) {
+            if (target.getName == "_2$mcI$sp") {
+              UnresolvedAttribute("_2")
+            } else {
+              println(s"Error: unknown target $target")
               return None
+            }
+          } else {
+            analyzeMethod(target, schema, attributes) match {
+              case Some(expr) => expr
+              case None =>
+                println("ERROR: Problem analyzing method call")
+                return None
+            }
+          }
+        case GETFIELD =>
+          val target = classPool.get(constPool.getFieldrefClassName(instructions.u16bitAt(pos + 1)))
+          val targetField = constPool.getFieldrefName(instructions.u16bitAt(pos + 1))
+          if (target.getName == "scala.Tuple2") {
+            UnresolvedAttribute(targetField)
+          } else {
+            println(s"ERROR: Unknown GETFIELD target: $target")
+            return None
           }
         case DRETURN | IRETURN | LRETURN =>
           return Some(exprs(stack(stackHeight)))
