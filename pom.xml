@@ -93,7 +93,10 @@
     <module>common/tags</module>
     <module>core</module>
     <module>graphx</module>
-    <module>mllib</module>
+    <!-- Note: the ML and Kafka modules would typically be defined here, but because their
+         dependencies are not 2.12-ready we need to conditionally enable those modules via the
+         2.11 and 2.10 build profiles -->
+    <!-- <module>mllib</module> -->
     <module>tools</module>
     <module>streaming</module>
     <module>sql/catalyst</module>
@@ -107,8 +110,8 @@
     <module>examples</module>
     <module>repl</module>
     <module>launcher</module>
-    <module>external/kafka</module>
-    <module>external/kafka-assembly</module>
+    <!-- <module>external/kafka</module> -->
+    <!-- <module>external/kafka-assembly</module> -->
   </modules>
 
   <properties>
@@ -162,6 +165,7 @@
     <jline.groupid>org.scala-lang</jline.groupid>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <fasterxml.jackson.version>2.5.3</fasterxml.jackson.version>
+    <fasterxml.jackson.scala.version>2.5.3</fasterxml.jackson.scala.version>
     <snappy.version>1.1.2.1</snappy.version>
     <netlib.java.version>1.1.2</netlib.java.version>
     <calcite.version>1.2.0-incubating</calcite.version>
@@ -178,6 +182,7 @@
     <jsr305.version>1.3.9</jsr305.version>
     <libthrift.version>0.9.2</libthrift.version>
     <antlr.version>3.5.2</antlr.version>
+    <json4s.version>3.2.2</json4s.version>
 
     <test.java.home>${java.home}</test.java.home>
     <test.exclude.tags></test.exclude.tags>
@@ -584,7 +589,7 @@
       <dependency>
         <groupId>com.fasterxml.jackson.module</groupId>
         <artifactId>jackson-module-scala_${scala.binary.version}</artifactId>
-        <version>${fasterxml.jackson.version}</version>
+        <version>${fasterxml.jackson.scala.version}</version>
         <exclusions>
           <exclusion>
             <groupId>com.google.guava</groupId>
@@ -592,6 +597,11 @@
           </exclusion>
         </exclusions>
       </dependency>
+      <dependency>
+        <groupId>org.json4s</groupId>
+        <artifactId>json4s-jackson_${scala.binary.version}</artifactId>
+        <version>${json4s.version}</version>
+        </dependency>
       <dependency>
         <groupId>com.sun.jersey</groupId>
         <artifactId>jersey-server</artifactId>
@@ -2449,6 +2459,13 @@
         <jline.version>${scala.version}</jline.version>
         <jline.groupid>org.scala-lang</jline.groupid>
       </properties>
+      <!-- TODO: remove these from here and always enable them in root POM once these modules'
+           dependencies are 2.12-ready -->
+      <modules>
+        <module>mllib</module>
+        <module>external/kafka</module>
+        <module>external/kafka-assembly</module>
+      </modules>
       <dependencyManagement>
         <dependencies>
           <dependency>
@@ -2461,23 +2478,52 @@
     </profile>
 
     <profile>
+      <id>scala-2.11</id>
+      <!-- Note: this profile has no activation because it only serves to document the build's
+           defaults, which use Scala 2.11. The properties here should be kept in sync with the
+           build's default settings, which are defined at the top of this root POM. -->
+      <!-- UPDATE: for now, we need to alwass explicitl pass -Dscala-2.11 for 2.11 builds -->
+      <activation>
+        <property><name>scala-2.11</name></property>
+      </activation>
+      <properties>
+        <scala.version>2.11.7</scala.version>
+        <scala.binary.version>2.11</scala.binary.version>
+      </properties>
+      <!-- TODO: remove these from here and always enable them in root POM once these modules'
+           dependencies are 2.12-ready -->
+      <modules>
+        <module>mllib</module>
+        <module>external/kafka</module>
+        <module>external/kafka-assembly</module>
+      </modules>
+    </profile>
+
+    <profile>
+      <id>scala-2.12</id>
+      <activation>
+        <property><name>scala-2.12</name></property>
+      </activation>
+      <properties>
+        <scala.version>2.12.0-M4</scala.version>
+        <scala.binary.version>2.12.0-M4</scala.binary.version>
+        <!-- This corresponds to https://github.com/twitter/chill/pull/253 -->
+        <chill.version>0.8.1-SNAPSHOT</chill.version>
+        <!-- This corresponds to https://github.com/FasterXML/jackson-module-scala/pull/247 -->
+        <fasterxml.jackson.scala.version>2.7.3-SNAPSHOT</fasterxml.jackson.scala.version>
+        <fasterxml.jackson.version>2.7.0</fasterxml.jackson.version>
+        <!-- This corresponds to https://github.com/JoshRosen/json4s/tree/scala-2.12.0-m4 -->
+        <json4s.version>3.4.0-SNAPSHOT</json4s.version>
+      </properties>
+    </profile>
+
+    <profile>
       <id>test-java-home</id>
       <activation>
         <property><name>env.JAVA_HOME</name></property>
       </activation>
       <properties>
         <test.java.home>${env.JAVA_HOME}</test.java.home>
-      </properties>
-    </profile>
-
-    <profile>
-      <id>scala-2.11</id>
-      <activation>
-        <property><name>!scala-2.10</name></property>
-      </activation>
-      <properties>
-        <scala.version>2.11.7</scala.version>
-        <scala.binary.version>2.11</scala.binary.version>
       </properties>
     </profile>
 

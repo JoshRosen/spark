@@ -124,6 +124,8 @@ object SparkBuild extends PomBuild {
       // in the same way as Maven which handles -Dname as -Dname=true before executes build process.
       // see: https://github.com/apache/maven/blob/maven-3.0.4/maven-embedder/src/main/java/org/apache/maven/cli/MavenCli.java#L1082
       System.setProperty("scala-2.10", "true")
+    } else if (System.getProperty("scala-2.12") == "") {
+      System.setProperty("scala-2.12", "true")
     }
     profiles
   }
@@ -139,10 +141,17 @@ object SparkBuild extends PomBuild {
   lazy val MavenCompile = config("m2r") extend(Compile)
   lazy val publishLocalBoth = TaskKey[Unit]("publish-local", "publish local for m2 and ivy")
 
-  lazy val sparkGenjavadocSettings: Seq[sbt.Def.Setting[_]] = Seq(
-    libraryDependencies += compilerPlugin(
-      "org.spark-project" %% "genjavadoc-plugin" % unidocGenjavadocVersion.value cross CrossVersion.full),
-    scalacOptions <+= target.map(t => "-P:genjavadoc:out=" + (t / "java")))
+  lazy val sparkGenjavadocSettings: Seq[sbt.Def.Setting[_]] = {
+    if (System.getProperty("scala-2.12") != null) {
+      // TODO: re-enable once our custom genjavadoc is published for 2.12 (see SPARK-14511).
+      Seq.empty
+    } else {
+      Seq(
+        libraryDependencies += compilerPlugin(
+          "org.spark-project" %% "genjavadoc-plugin" % unidocGenjavadocVersion.value cross CrossVersion.full),
+        scalacOptions <+= target.map(t => "-P:genjavadoc:out=" + (t / "java")))
+    }
+  }
 
   lazy val sharedSettings = sparkGenjavadocSettings ++ Seq (
     exportJars in Compile := true,
@@ -248,11 +257,16 @@ object SparkBuild extends PomBuild {
   /* Enable tests settings for all projects except examples, assembly and tools */
   (allProjects ++ optionallyEnabledProjects).foreach(enable(TestSettings.settings))
 
-  val mimaProjects = allProjects.filterNot { x =>
-    Seq(
-      spark, hive, hiveThriftServer, catalyst, repl, networkCommon, networkShuffle, networkYarn,
-      unsafe, testTags, sketch
-    ).contains(x)
+  // TODO: remove this conditional after Spark publishes with 2.12 support:
+  lazy val mimaProjects = if (System.getProperty("scala-2.12") == null) {
+    allProjects.filterNot { x =>
+      Seq(
+        spark, hive, hiveThriftServer, catalyst, repl, networkCommon, networkShuffle, networkYarn,
+        unsafe, testTags, sketch
+      ).contains(x)
+    }
+  } else {
+    Seq.empty
   }
 
   mimaProjects.foreach { x =>
