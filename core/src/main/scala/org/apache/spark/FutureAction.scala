@@ -100,6 +100,16 @@ trait FutureAction[T] extends Future[T] {
    */
   def jobIds: Seq[Int]
 
+  // TODO(josh): We probably need to provide implementations for this.
+  // scalastyle:off
+  def transform[S](
+      f: scala.util.Try[T] => scala.util.Try[S])(
+      implicit executor: scala.concurrent.ExecutionContext): scala.concurrent.Future[S] = ???
+
+  def transformWith[S](
+      f: scala.util.Try[T] => scala.concurrent.Future[S])(
+      implicit executor: scala.concurrent.ExecutionContext): scala.concurrent.Future[S] = ???
+  // scalastyle:on
 }
 
 
