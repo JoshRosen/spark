@@ -57,7 +57,8 @@ private[spark] class TaskContextImpl(
   // Whether the task has failed.
   @volatile private var failed: Boolean = false
 
-  override def addTaskCompletionListener(listener: TaskCompletionListener): this.type = {
+  override def addJavaFriendlyTaskCompletionListener(
+      listener: TaskCompletionListener): this.type = {
     onCompleteCallbacks += listener
     this
   }

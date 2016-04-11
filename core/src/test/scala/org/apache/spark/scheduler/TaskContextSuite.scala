@@ -90,7 +90,7 @@ class TaskContextSuite extends SparkFunSuite with BeforeAndAfter with LocalSpark
     val context = TaskContext.empty()
     val listener = mock(classOf[TaskCompletionListener])
     context.addTaskCompletionListener(_ => throw new Exception("blah"))
-    context.addTaskCompletionListener(listener)
+    context.addJavaFriendlyTaskCompletionListener(listener)
     context.addTaskCompletionListener(_ => throw new Exception("blah"))
 
     intercept[TaskCompletionListenerException] {

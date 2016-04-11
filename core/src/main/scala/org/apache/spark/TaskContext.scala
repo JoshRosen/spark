@@ -102,6 +102,10 @@ abstract class TaskContext extends Serializable {
   @deprecated("Local execution was removed, so this always returns false", "2.0.0")
   def isRunningLocally(): Boolean
 
+  // TODO(josh): this used to be an overload of addTaskCompletionListener(), but the overload
+  // became ambiguous under Scala 2.12. For now, I'm renaming this in order to get the code to
+  // compile, but we need to figure out a long-term solution which maintains at least source
+  // compatibility (and probably binary compatibility) for Java callers.
   /**
    * Adds a (Java friendly) listener to be executed on task completion.
    * This will be called in all situation - success, failure, or cancellation.
@@ -109,7 +113,7 @@ abstract class TaskContext extends Serializable {
    *
    * Exceptions thrown by the listener will result in failure of the task.
    */
-  def addTaskCompletionListener(listener: TaskCompletionListener): TaskContext
+  def addJavaFriendlyTaskCompletionListener(listener: TaskCompletionListener): TaskContext
 
   /**
    * Adds a listener in the form of a Scala closure to be executed on task completion.
@@ -119,7 +123,7 @@ abstract class TaskContext extends Serializable {
    * Exceptions thrown by the listener will result in failure of the task.
    */
   def addTaskCompletionListener(f: (TaskContext) => Unit): TaskContext = {
-    addTaskCompletionListener(new TaskCompletionListener {
+    addJavaFriendlyTaskCompletionListener(new TaskCompletionListener {
       override def onTaskCompletion(context: TaskContext): Unit = f(context)
     })
   }

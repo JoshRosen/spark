@@ -32,7 +32,7 @@ public class JavaTaskContextCompileCheck {
     tc.isCompleted();
     tc.isInterrupted();
 
-    tc.addTaskCompletionListener(new JavaTaskCompletionListenerImpl());
+    tc.addJavaFriendlyTaskCompletionListener(new JavaTaskCompletionListenerImpl());
     tc.addTaskFailureListener(new JavaTaskFailureListenerImpl());
 
     tc.attemptNumber();
@@ -52,7 +52,7 @@ public class JavaTaskContextCompileCheck {
       context.isInterrupted();
       context.stageId();
       context.partitionId();
-      context.addTaskCompletionListener(this);
+      context.addJavaFriendlyTaskCompletionListener(this);
     }
   }
 
