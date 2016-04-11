@@ -33,7 +33,7 @@ public class JavaTaskContextCompileCheck {
     tc.isInterrupted();
 
     tc.addJavaFriendlyTaskCompletionListener(new JavaTaskCompletionListenerImpl());
-    tc.addTaskFailureListener(new JavaTaskFailureListenerImpl());
+    tc.addJavaFriendlyTaskFailureListener(new JavaTaskFailureListenerImpl());
 
     tc.attemptNumber();
     tc.partitionId();

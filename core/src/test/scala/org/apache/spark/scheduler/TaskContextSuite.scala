@@ -72,7 +72,8 @@ class TaskContextSuite extends SparkFunSuite with BeforeAndAfter with LocalSpark
     val rdd = new RDD[String](sc, List()) {
       override def getPartitions = Array[Partition](StubPartition(0))
       override def compute(split: Partition, context: TaskContext) = {
-        context.addTaskFailureListener((context, error) => TaskContextSuite.lastError = error)
+        context.addTaskFailureListener(
+          (context, error) => TaskContextSuite.lastError = error)
         sys.error("damn error")
       }
     }
@@ -104,7 +105,7 @@ class TaskContextSuite extends SparkFunSuite with BeforeAndAfter with LocalSpark
     val context = TaskContext.empty()
     val listener = mock(classOf[TaskFailureListener])
     context.addTaskFailureListener((_, _) => throw new Exception("exception in listener1"))
-    context.addTaskFailureListener(listener)
+    context.addJavaFriendlyTaskFailureListener(listener)
     context.addTaskFailureListener((_, _) => throw new Exception("exception in listener3"))
 
     val e = intercept[TaskCompletionListenerException] {

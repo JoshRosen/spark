@@ -128,18 +128,22 @@ abstract class TaskContext extends Serializable {
     })
   }
 
+  // TODO(josh): this used to be an overload of addTaskFailureListener(), but the overload
+  // became ambiguous under Scala 2.12. For now, I'm renaming this in order to get the code to
+  // compile, but we need to figure out a long-term solution which maintains at least source
+  // compatibility (and probably binary compatibility) for Java callers.
   /**
    * Adds a listener to be executed on task failure.
    * Operations defined here must be idempotent, as `onTaskFailure` can be called multiple times.
    */
-  def addTaskFailureListener(listener: TaskFailureListener): TaskContext
+  def addJavaFriendlyTaskFailureListener(listener: TaskFailureListener): TaskContext
 
   /**
    * Adds a listener to be executed on task failure.
    * Operations defined here must be idempotent, as `onTaskFailure` can be called multiple times.
    */
   def addTaskFailureListener(f: (TaskContext, Throwable) => Unit): TaskContext = {
-    addTaskFailureListener(new TaskFailureListener {
+    addJavaFriendlyTaskFailureListener(new TaskFailureListener {
       override def onTaskFailure(context: TaskContext, error: Throwable): Unit = f(context, error)
     })
   }

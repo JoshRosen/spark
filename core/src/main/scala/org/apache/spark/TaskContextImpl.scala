@@ -63,7 +63,7 @@ private[spark] class TaskContextImpl(
     this
   }
 
-  override def addTaskFailureListener(listener: TaskFailureListener): this.type = {
+  override def addJavaFriendlyTaskFailureListener(listener: TaskFailureListener): this.type = {
     onFailureCallbacks += listener
     this
   }
