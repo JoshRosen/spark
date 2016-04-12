@@ -91,21 +91,6 @@ private[spark] object ClosureCleaner extends Logging {
     (seen - obj.getClass).toList
   }
 
-  private def createNullValue(cls: Class[_]): AnyRef = {
-    if (cls.isPrimitive) {
-      cls match {
-        case java.lang.Boolean.TYPE => new java.lang.Boolean(false)
-        case java.lang.Character.TYPE => new java.lang.Character('\u0000')
-        case java.lang.Void.TYPE =>
-          // This should not happen because `Foo(void x) {}` does not compile.
-          throw new IllegalStateException("Unexpected void parameter in constructor")
-        case _ => new java.lang.Byte(0: Byte)
-      }
-    } else {
-      null
-    }
-  }
-
   /**
    * Clean the given closure in place.
    *
