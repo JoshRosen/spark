@@ -148,7 +148,7 @@ private[ui] class AllJobsPage(parent: JobsTab) extends WebUIPage("") {
                |    'Removed at ${UIUtils.formatDate(new Date(event.finishTime.get))}' +
                |    '${
                         if (event.finishReason.isDefined) {
-                          s"""<br>Reason: ${event.finishReason.get}"""
+                          s"""<br>Reason: ${event.finishReason.get.replace("\n", " ")}"""
                         } else {
                           ""
                         }
@@ -296,6 +296,10 @@ private[ui] class AllJobsPage(parent: JobsTab) extends WebUIPage("") {
       val summary: NodeSeq =
         <div>
           <ul class="unstyled">
+            <li>
+              <strong>User:</strong>
+              {parent.getSparkUser}
+            </li>
             <li>
               <strong>Total Uptime:</strong>
               {

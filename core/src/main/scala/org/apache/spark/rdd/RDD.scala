@@ -255,8 +255,8 @@ abstract class RDD[T: ClassTag](
   }
 
   /**
-    * Returns the number of partitions of this RDD.
-    */
+   * Returns the number of partitions of this RDD.
+   */
   @Since("1.6.0")
   final def getNumPartitions: Int = partitions.length
 
@@ -333,10 +333,10 @@ abstract class RDD[T: ClassTag](
       case Left(blockResult) =>
         if (readCachedBlock) {
           val existingMetrics = context.taskMetrics().registerInputMetrics(blockResult.readMethod)
-          existingMetrics.incBytesReadInternal(blockResult.bytes)
+          existingMetrics.incBytesRead(blockResult.bytes)
           new InterruptibleIterator[T](context, blockResult.data.asInstanceOf[Iterator[T]]) {
             override def next(): T = {
-              existingMetrics.incRecordsReadInternal(1)
+              existingMetrics.incRecordsRead(1)
               delegate.next()
             }
           }
@@ -568,11 +568,7 @@ abstract class RDD[T: ClassTag](
    * times (use `.distinct()` to eliminate them).
    */
   def union(other: RDD[T]): RDD[T] = withScope {
-    if (partitioner.isDefined && other.partitioner == partitioner) {
-      new PartitionerAwareUnionRDD(sc, Array(this, other))
-    } else {
-      new UnionRDD(sc, Array(this, other))
-    }
+    sc.union(this, other)
   }
 
   /**
