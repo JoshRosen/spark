@@ -662,6 +662,7 @@ trait ScalaReflection {
   def attributesFor[T: TypeTag]: Seq[Attribute] = schemaFor[T] match {
     case Schema(s: StructType, _) =>
       s.toAttributes
+    case _ => throw new Exception("Expected schema!")
   }
 
   /** Returns a catalyst DataType and its nullability for the given Scala Type using reflection. */

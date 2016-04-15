@@ -2041,7 +2041,7 @@ class Dataset[T] private[sql](
    * @since 1.6.0
    */
   def foreachPartition(func: ForeachPartitionFunction[T]): Unit =
-    foreachPartition(it => func.call(it.asJava))
+    foreachPartition((it: Iterator[T]) => func.call(it.asJava))
 
   /**
    * Returns the first `n` rows in the [[Dataset]].

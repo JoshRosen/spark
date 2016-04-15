@@ -38,9 +38,13 @@ package object codegen {
     }
   }
 
+
+  // Commented out because the nsc import doesn't work with 2.12
+
   /**
    * Dumps the bytecode from a class to the screen using javap.
    */
+  /*
   object DumpByteCode {
     import scala.sys.process._
     val dumpDirectory = Utils.createTempDir()
@@ -70,4 +74,5 @@ package object codegen {
       // scalastyle:on println
     }
   }
+  */
 }

@@ -182,6 +182,7 @@ object Utils {
       case agg @ AggregateExpression(aggregateFunction, mode, true, _) =>
         aggregateFunction.transformDown(distinctColumnAttributeLookup)
           .asInstanceOf[AggregateFunction]
+      case other => throw new MatchError(other)
     }
 
     val partialDistinctAggregate: SparkPlan = {

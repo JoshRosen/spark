@@ -51,9 +51,12 @@ public class typed {
    *
    * @since 2.0.0
    */
+  // TODO(josh): re-enable after SAM fix
+  /*
   public static <T> TypedColumn<T, Long> count(MapFunction<T, Object> f) {
     return new TypedCount<T>(f).toColumnJava();
   }
+  */
 
   /**
    * Sum aggregate function for floating point (double) type.

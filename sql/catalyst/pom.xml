@@ -80,6 +80,20 @@
       <artifactId>commons-codec</artifactId>
     </dependency>
   </dependencies>
+  <profiles>
+    <profile>
+      <id>scala-2.12</id>
+      <activation>
+        <property><name>scala-2.12</name></property>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>org.scala-lang.modules</groupId>
+          <artifactId>scala-parser-combinators_${scala.binary.version}</artifactId>
+        </dependency>
+      </dependencies>
+    </profile>
+  </profiles>
   <build>
     <outputDirectory>target/scala-${scala.binary.version}/classes</outputDirectory>
     <testOutputDirectory>target/scala-${scala.binary.version}/test-classes</testOutputDirectory>

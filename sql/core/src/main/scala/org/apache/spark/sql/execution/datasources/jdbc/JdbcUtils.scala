@@ -276,9 +276,10 @@ object JdbcUtils extends Logging {
     val rddSchema = df.schema
     val getConnection: () => Connection = createConnectionFactory(url, properties)
     val batchSize = properties.getProperty("batchsize", "1000").toInt
-    df.foreachPartition { iterator =>
+    // TODO(josh): revert once applying SAM ambiguity fix
+    val func: Iterator[Row] => Unit = (iterator: Iterator[Row]) =>
       savePartition(getConnection, table, iterator, rddSchema, nullTypes, batchSize, dialect)
-    }
+    df.foreachPartition(func)
   }
 
 }

@@ -615,7 +615,8 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
     case o: Option[_] => o.map(parseToJson)
     case t: Seq[_] => JArray(t.map(parseToJson).toList)
     case m: Map[_, _] =>
-      val fields = m.toList.map { case (k: String, v) => (k, parseToJson(v)) }
+      // TODO(josh): exhausivity
+      val fields = m.toList.map { case (k, v) => (k.toString, parseToJson(v)) }
       JObject(fields)
     case r: RDD[_] => JNothing
     // if it's a scala object, we can simply keep the full class path.

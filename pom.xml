@@ -162,7 +162,7 @@
     <!-- managed up from 3.2.1 for SPARK-11652 -->
     <commons.collections.version>3.2.2</commons.collections.version>
     <scala.version>2.11.8</scala.version>
-    <scala.binary.version>2.11</scala.binary.version>
+    <scala.binary.version>2.12.0-M4</scala.binary.version>
     <jline.version>${scala.version}</jline.version>
     <jline.groupid>org.scala-lang</jline.groupid>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
@@ -610,11 +610,6 @@
             <artifactId>commons-math3</artifactId>
           </exclusion>
         </exclusions>
-      </dependency>
-      <dependency>
-        <groupId>org.json4s</groupId>
-        <artifactId>json4s-jackson_${scala.binary.version}</artifactId>
-        <version>3.2.10</version>
       </dependency>
       <dependency>
         <groupId>com.sun.jersey</groupId>
@@ -2484,7 +2479,7 @@
       </activation>
       <properties>
         <scala.version>2.10.6</scala.version>
-        <scala.binary.version>2.10</scala.binary.version>
+        <scala.binary.version>2.11</scala.binary.version>
         <jline.version>${scala.version}</jline.version>
         <jline.groupid>org.scala-lang</jline.groupid>
       </properties>
@@ -2560,6 +2555,15 @@
           </snapshots>
         </repository>
       </repositories>
+      <dependencyManagement>
+        <dependencies>
+          <dependency>
+            <groupId>org.scala-lang.modules</groupId>
+            <artifactId>scala-parser-combinators_${scala.binary.version}</artifactId>
+            <version>1.0.4</version>
+          </dependency>
+        </dependencies>
+      </dependencyManagement>
     </profile>
 
     <profile>
