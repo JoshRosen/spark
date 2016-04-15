@@ -206,6 +206,8 @@ public class TransportClient implements Closeable {
     }
   }
 
+  public static volatile boolean explodeWithException = false;
+
   /**
    * Sends an opaque message to the RpcHandler on the server-side. The callback will be invoked
    * with the server's response or upon any failure.
@@ -226,17 +228,23 @@ public class TransportClient implements Closeable {
       new ChannelFutureListener() {
         @Override
         public void operationComplete(ChannelFuture future) throws Exception {
-          if (future.isSuccess()) {
+          if (future.isSuccess() && !explodeWithException) {
             long timeTaken = System.currentTimeMillis() - startTime;
             logger.trace("Sending request {} to {} took {} ms", requestId, serverAddr, timeTaken);
           } else {
+            Throwable cause = null;
+            if (explodeWithException) {
+              cause = new Exception("Intentional exception!");
+            } else {
+              cause = future.cause();
+            }
             String errorMsg = String.format("Failed to send RPC %s to %s: %s", requestId,
-              serverAddr, future.cause());
-            logger.error(errorMsg, future.cause());
+              serverAddr, cause);
+            logger.error(errorMsg, cause);
             handler.removeRpcRequest(requestId);
             channel.close();
             try {
-              callback.onFailure(new IOException(errorMsg, future.cause()));
+              callback.onFailure(new IOException(errorMsg, cause));
             } catch (Exception e) {
               logger.error("Uncaught exception in RPC response callback handler!", e);
             }

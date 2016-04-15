@@ -17,6 +17,8 @@
 
 package org.apache.spark.ml.classification
 
+import org.apache.spark.network.client.TransportClient
+
 import scala.collection.mutable
 
 import breeze.linalg.{DenseVector => BDV}
@@ -61,6 +63,7 @@ private[classification] trait LogisticRegressionParams extends ProbabilisticClas
    *       equivalent.
    *
    * Default is 0.5.
+   *
    * @group setParam
    */
   def setThreshold(value: Double): this.type = {
@@ -130,6 +133,7 @@ private[classification] trait LogisticRegressionParams extends ProbabilisticClas
 
   /**
    * If [[threshold]] and [[thresholds]] are both set, ensures they are consistent.
+   *
    * @throws IllegalArgumentException if [[threshold]] and [[thresholds]] are not equivalent
    */
   protected def checkThresholdConsistency(): Unit = {
@@ -169,6 +173,7 @@ class LogisticRegression @Since("1.2.0") (
   /**
    * Set the regularization parameter.
    * Default is 0.0.
+   *
    * @group setParam
    */
   @Since("1.2.0")
@@ -180,6 +185,7 @@ class LogisticRegression @Since("1.2.0") (
    * For alpha = 0, the penalty is an L2 penalty. For alpha = 1, it is an L1 penalty.
    * For 0 < alpha < 1, the penalty is a combination of L1 and L2.
    * Default is 0.0 which is an L2 penalty.
+   *
    * @group setParam
    */
   @Since("1.4.0")
@@ -189,6 +195,7 @@ class LogisticRegression @Since("1.2.0") (
   /**
    * Set the maximum number of iterations.
    * Default is 100.
+   *
    * @group setParam
    */
   @Since("1.2.0")
@@ -199,6 +206,7 @@ class LogisticRegression @Since("1.2.0") (
    * Set the convergence tolerance of iterations.
    * Smaller value will lead to higher accuracy with the cost of more iterations.
    * Default is 1E-6.
+   *
    * @group setParam
    */
   @Since("1.4.0")
@@ -208,6 +216,7 @@ class LogisticRegression @Since("1.2.0") (
   /**
    * Whether to fit an intercept term.
    * Default is true.
+   *
    * @group setParam
    */
   @Since("1.4.0")
@@ -221,6 +230,7 @@ class LogisticRegression @Since("1.2.0") (
    * the models should be always converged to the same solution when no regularization
    * is applied. In R's GLMNET package, the default behavior is true as well.
    * Default is true.
+   *
    * @group setParam
    */
   @Since("1.5.0")
@@ -237,6 +247,7 @@ class LogisticRegression @Since("1.2.0") (
    * Whether to over-/under-sample training instances according to the given weights in weightCol.
    * If empty, all instances are treated equally (weight 1.0).
    * Default is empty, so all instances have weight one.
+   *
    * @group setParam
    */
   @Since("1.6.0")
@@ -441,7 +452,11 @@ class LogisticRegression @Since("1.2.0") (
       }
     }
 
-    if (handlePersistence) instances.unpersist()
+    if (handlePersistence) {
+      println("About to explode with an exception!")
+      TransportClient.explodeWithException = true
+      instances.unpersist()
+    }
 
     val model = copyValues(new LogisticRegressionModel(uid, coefficients, intercept))
     val (summaryModel, probabilityColName) = model.findSummaryModelAndProbabilityCol()
@@ -550,6 +565,7 @@ class LogisticRegressionModel private[spark] (
 
   /**
    * Evaluates the model on a test dataset.
+   *
    * @param dataset Test dataset to evaluate model on.
    */
   @Since("2.0.0")
@@ -701,6 +717,7 @@ private[classification] class MultiClassSummarizer extends Serializable {
 
   /**
    * Add a new label into this MultilabelSummarizer, and update the distinct map.
+   *
    * @param label The label for this data point.
    * @param weight The weight of this instances.
    * @return This MultilabelSummarizer
@@ -861,6 +878,7 @@ class BinaryLogisticRegressionSummary private[classification] (
    *
    * Note: This ignores instance weights (setting all to 1.0) from [[LogisticRegression.weightCol]].
    *       This will change in later Spark versions.
+   *
    * @see http://en.wikipedia.org/wiki/Receiver_operating_characteristic
    */
   @Since("1.5.0")
