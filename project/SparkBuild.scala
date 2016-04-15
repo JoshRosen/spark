@@ -172,6 +172,11 @@ object SparkBuild extends PomBuild {
       Resolver.mavenLocal,
       Resolver.file("local", file(Path.userHome.absolutePath + "/.ivy2/local"))(Resolver.ivyStylePatterns)
     ),
+    resolvers ++= (if (System.getProperty("scala-2.12") != null) {
+      Seq("scala-pr-snapshots" at "https://scala-ci.typesafe.com/artifactory/scala-pr-validation-snapshots/")
+    } else {
+      Seq.empty
+    }),
     externalResolvers := resolvers.value,
     otherResolvers <<= SbtPomKeys.mvnLocalRepository(dotM2 => Seq(Resolver.file("dotM2", dotM2))),
     publishLocalConfiguration in MavenCompile <<= (packagedArtifacts, deliverLocal, ivyLoggingLevel) map {

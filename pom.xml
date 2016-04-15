@@ -2536,16 +2536,30 @@
         <property><name>scala-2.12</name></property>
       </activation>
       <properties>
-        <scala.version>2.12.0-M4</scala.version>
+        <!-- This version corresponds to a commit in https://github.com/scala/scala/pull/5099 -->
+        <scala.version>2.12.0-e6a566e-SNAPSHOT</scala.version>
         <scala.binary.version>2.12.0-M4</scala.binary.version>
         <!-- This corresponds to https://github.com/twitter/chill/pull/253 -->
         <chill.version>0.8.1-SNAPSHOT</chill.version>
-        <!-- This corresponds to https://github.com/FasterXML/jackson-module-scala/pull/247 -->
+        <!-- This incorporates https://github.com/FasterXML/jackson-module-scala/pull/247 -->
         <fasterxml.jackson.scala.version>2.7.3-SNAPSHOT</fasterxml.jackson.scala.version>
         <fasterxml.jackson.version>2.7.0</fasterxml.jackson.version>
         <!-- This corresponds to https://github.com/JoshRosen/json4s/tree/scala-2.12.0-m4 -->
         <json4s.version>3.4.0-SNAPSHOT</json4s.version>
       </properties>
+      <repositories>
+        <repository>
+          <id>scala-pr-snapshots</id>
+          <name>Scala PR Snapshots</name>
+          <url>https://scala-ci.typesafe.com/artifactory/scala-pr-validation-snapshots/</url>
+          <releases>
+            <enabled>false</enabled>
+          </releases>
+          <snapshots>
+            <enabled>true</enabled>
+          </snapshots>
+        </repository>
+      </repositories>
     </profile>
 
     <profile>
