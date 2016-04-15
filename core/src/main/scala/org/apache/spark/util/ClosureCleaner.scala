@@ -156,7 +156,8 @@ private[spark] object ClosureCleaner extends Logging {
       accessedFields: Map[Class[_], Set[String]]): Unit = {
 
     if (!isClosure(func.getClass)) {
-      logWarning("Expected a closure; got " + func.getClass.getName)
+      // TODO: pass the other options as well
+      LambdaClosureCleaner.clean(func)
       return
     }
 
@@ -289,7 +290,7 @@ private[spark] object ClosureCleaner extends Logging {
     }
   }
 
-  private def ensureSerializable(func: AnyRef) {
+  private[util] def ensureSerializable(func: AnyRef) {
     try {
       if (SparkEnv.get != null) {
         SparkEnv.get.closureSerializer.newInstance().serialize(func)

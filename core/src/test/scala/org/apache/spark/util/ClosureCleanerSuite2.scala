@@ -141,6 +141,9 @@ class ClosureCleanerSuite2 extends SparkFunSuite with BeforeAndAfterAll with Pri
   }
 
   test("get inner closure classes") {
+    // Skip on Scala 2.12 for now, since we may not need to determine accessed fields anymore.
+    assume(!scala.util.Properties.versionString.startsWith("version 2.12."))
+
     val closure1 = () => 1
     val closure2 = () => { () => 1 }
     val closure3 = (i: Int) => {
@@ -188,18 +191,20 @@ class ClosureCleanerSuite2 extends SparkFunSuite with BeforeAndAfterAll with Pri
     assert(outerClasses1.isEmpty)
     assert(outerClasses2.isEmpty)
 
-    // These closures do have $outer pointers because they ultimately reference `this`
-    // The first $outer pointer refers to the closure defines this test (see FunSuite#test)
-    // The second $outer pointer refers to ClosureCleanerSuite2
-    assert(outerClasses3.size === 2)
-    assert(outerClasses4.size === 2)
-    assert(isClosure(outerClasses3(0)))
-    assert(isClosure(outerClasses4(0)))
-    assert(outerClasses3(0) === outerClasses4(0)) // part of the same "FunSuite#test" scope
-    assert(outerClasses3(1) === this.getClass)
-    assert(outerClasses4(1) === this.getClass)
-    assert(outerObjects3(1) === this)
-    assert(outerObjects4(1) === this)
+    if (!scala.util.Properties.versionString.startsWith("version 2.12.")) {
+      // These closures do have $outer pointers because they ultimately reference `this`
+      // The first $outer pointer refers to the closure defines this test (see FunSuite#test)
+      // The second $outer pointer refers to ClosureCleanerSuite2
+      assert(outerClasses3.size === 2)
+      assert(outerClasses4.size === 2)
+      assert(isClosure(outerClasses3(0)))
+      assert(isClosure(outerClasses4(0)))
+      assert(outerClasses3(0) === outerClasses4(0)) // part of the same "FunSuite#test" scope
+      assert(outerClasses3(1) === this.getClass)
+      assert(outerClasses4(1) === this.getClass)
+      assert(outerObjects3(1) === this)
+      assert(outerObjects4(1) === this)
+    }
   }
 
   test("get outer classes and objects with nesting") {
@@ -231,22 +236,24 @@ class ClosureCleanerSuite2 extends SparkFunSuite with BeforeAndAfterAll with Pri
       assert(outerClasses3.size === outerObjects3.size)
       // Same as above, this closure only references local variables
       assert(outerClasses1.isEmpty)
-      // This closure references the "test2" scope because it needs to find the method `y`
-      // Scope hierarchy: "test2" < "FunSuite#test" < ClosureCleanerSuite2
-      assert(outerClasses2.size === 3)
-      // This closure references the "test2" scope because it needs to find the `localValue`
-      // defined outside of this scope
-      assert(outerClasses3.size === 3)
-      assert(isClosure(outerClasses2(0)))
-      assert(isClosure(outerClasses3(0)))
-      assert(isClosure(outerClasses2(1)))
-      assert(isClosure(outerClasses3(1)))
-      assert(outerClasses2(0) === outerClasses3(0)) // part of the same "test2" scope
-      assert(outerClasses2(1) === outerClasses3(1)) // part of the same "FunSuite#test" scope
-      assert(outerClasses2(2) === this.getClass)
-      assert(outerClasses3(2) === this.getClass)
-      assert(outerObjects2(2) === this)
-      assert(outerObjects3(2) === this)
+      if (!scala.util.Properties.versionString.startsWith("version 2.12.")) {
+        // This closure references the "test2" scope because it needs to find the method `y`
+        // Scope hierarchy: "test2" < "FunSuite#test" < ClosureCleanerSuite2
+        assert(outerClasses2.size === 3)
+        // This closure references the "test2" scope because it needs to find the `localValue`
+        // defined outside of this scope
+        assert(outerClasses3.size === 3)
+        assert(isClosure(outerClasses2(0)))
+        assert(isClosure(outerClasses3(0)))
+        assert(isClosure(outerClasses2(1)))
+        assert(isClosure(outerClasses3(1)))
+        assert(outerClasses2(0) === outerClasses3(0)) // part of the same "test2" scope
+        assert(outerClasses2(1) === outerClasses3(1)) // part of the same "FunSuite#test" scope
+        assert(outerClasses2(2) === this.getClass)
+        assert(outerClasses3(2) === this.getClass)
+        assert(outerObjects2(2) === this)
+        assert(outerObjects3(2) === this)
+      }
     }
 
     test1()
@@ -254,6 +261,9 @@ class ClosureCleanerSuite2 extends SparkFunSuite with BeforeAndAfterAll with Pri
   }
 
   test("find accessed fields") {
+    // Skip on Scala 2.12 for now, since we may not need to determine accessed fields anymore.
+    assume(!scala.util.Properties.versionString.startsWith("version 2.12."))
+
     val localValue = someSerializableValue
     val closure1 = () => 1
     val closure2 = () => localValue
@@ -292,6 +302,9 @@ class ClosureCleanerSuite2 extends SparkFunSuite with BeforeAndAfterAll with Pri
   }
 
   test("find accessed fields with nesting") {
+    // Skip on Scala 2.12 for now, since we may not need to determine accessed fields anymore.
+    assume(!scala.util.Properties.versionString.startsWith("version 2.12."))
+
     val localValue = someSerializableValue
 
     val test1 = () => {
@@ -538,13 +551,19 @@ class ClosureCleanerSuite2 extends SparkFunSuite with BeforeAndAfterAll with Pri
       // which is itself not serializable because it has a pointer to the ClosureCleanerSuite2.
       // If we do not clean transitively, we will not null out this indirect reference.
       verifyCleaning(
-        inner2, serializableBefore = false, serializableAfter = false, transitive = false)
+        inner2,
+        serializableBefore = scala.util.Properties.versionString.startsWith("version 2.12."),
+        serializableAfter = scala.util.Properties.versionString.startsWith("version 2.12."),
+        transitive = false)
 
       // If we clean transitively, we will find that method `a` does not actually reference the
       // outer closure's parent (i.e. the ClosureCleanerSuite), so we can additionally null out
       // the outer closure's parent pointer. This will make `inner2` serializable.
       verifyCleaning(
-        inner2, serializableBefore = false, serializableAfter = true, transitive = true)
+        inner2,
+        serializableBefore = scala.util.Properties.versionString.startsWith("version 2.12."),
+        serializableAfter = true,
+        transitive = true)
     }
 
     // Same as above, but with more levels of nesting
