@@ -41,7 +41,8 @@ import org.apache.spark.shuffle.ShuffleWriter
  *                   the type should be (RDD[_], ShuffleDependency[_, _, _]).
  * @param partition partition of the RDD this task is associated with
  * @param locs preferred task execution locations for locality scheduling
- * @param metrics a [[TaskMetrics]] that is created at driver side and sent to executor side.
+ * @param serializedTaskMetrics a [[TaskMetrics]] that is created and serialized on the driver
+ *                              and sent to the executor.
  * @param localProperties copy of thread-local properties set by the user on the driver side.
  */
 private[spark] class ShuffleMapTask(
@@ -50,9 +51,10 @@ private[spark] class ShuffleMapTask(
     taskBinary: Broadcast[Array[Byte]],
     partition: Partition,
     @transient private var locs: Seq[TaskLocation],
-    metrics: TaskMetrics,
+    serializedTaskMetrics: Array[Byte],
     localProperties: Properties)
-  extends Task[MapStatus](stageId, stageAttemptId, partition.index, metrics, localProperties)
+  extends Task[MapStatus](stageId, stageAttemptId, partition.index,
+    serializedTaskMetrics, localProperties)
   with Logging {
 
   /** A constructor used only in test suites. This does not require passing in an RDD. */
