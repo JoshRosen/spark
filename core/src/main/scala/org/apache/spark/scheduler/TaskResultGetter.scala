@@ -63,7 +63,7 @@ private[spark] class TaskResultGetter(sparkEnv: SparkEnv, scheduler: TaskSchedul
               // deserialize "value" without holding any lock so that it won't block other threads.
               // We should call it here, so that when it's called again in
               // "TaskSetManager.handleSuccessfulTask", it does not need to deserialize the value.
-              directResult.value()
+              directResult.value(serializer.get())
               (directResult, serializedData.limit())
             case IndirectTaskResult(blockId, size) =>
               if (!taskSetManager.canFetchMoreResults(size)) {

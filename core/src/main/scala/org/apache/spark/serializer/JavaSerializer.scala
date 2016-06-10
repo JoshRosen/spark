@@ -22,7 +22,7 @@ import java.nio.ByteBuffer
 
 import scala.reflect.ClassTag
 
-import org.nustaq.serialization.{FSTObjectInput, FSTObjectOutput}
+import org.nustaq.serialization.{FSTConfiguration, FSTObjectInput, FSTObjectOutput}
 
 import org.apache.spark.SparkConf
 import org.apache.spark.annotation.DeveloperApi
@@ -58,10 +58,10 @@ private[spark] class JavaSerializationStream(
   def close() { objOut.close() }
 }
 
-private[spark] class JavaDeserializationStream(in: InputStream, loader: ClassLoader)
+private[spark] class JavaDeserializationStream(in: InputStream, fstConf: FSTConfiguration)
   extends DeserializationStream {
 
-  private val objIn = new FSTObjectInput(in)
+  private val objIn = new FSTObjectInput(in, fstConf)
 
   def readObject[T: ClassTag](): T = objIn.readObject().asInstanceOf[T]
   def close() { objIn.close() }
@@ -84,6 +84,8 @@ private object JavaDeserializationStream {
 private[spark] class JavaSerializerInstance(
     counterReset: Int, extraDebugInfo: Boolean, defaultClassLoader: ClassLoader)
   extends SerializerInstance {
+
+  val fstConf = FSTConfiguration.createDefaultConfiguration()
 
   override def serialize[T: ClassTag](t: T): ByteBuffer = {
     val bos = new ByteBufferOutputStream()
@@ -110,11 +112,13 @@ private[spark] class JavaSerializerInstance(
   }
 
   override def deserializeStream(s: InputStream): DeserializationStream = {
-    new JavaDeserializationStream(s, defaultClassLoader)
+    fstConf.setClassLoader(defaultClassLoader)
+    new JavaDeserializationStream(s, fstConf)
   }
 
   def deserializeStream(s: InputStream, loader: ClassLoader): DeserializationStream = {
-    new JavaDeserializationStream(s, loader)
+    fstConf.setClassLoader(loader)
+    new JavaDeserializationStream(s, fstConf)
   }
 }
 
