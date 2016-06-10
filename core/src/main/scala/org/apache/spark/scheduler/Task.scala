@@ -44,7 +44,8 @@ import org.apache.spark.util.{AccumulatorV2, ByteBufferInputStream, ByteBufferOu
  * @param stageId id of the stage this task belongs to
  * @param stageAttemptId attempt id of the stage this task belongs to
  * @param partitionId index of the number in the RDD
- * @param metrics a [[TaskMetrics]] that is created at driver side and sent to executor side.
+ * @param serializedTaskMetrics a [[TaskMetrics]] that is created and serialized on the driver
+ *                              and sent to the executor.
  * @param localProperties copy of thread-local properties set by the user on the driver side.
  */
 private[spark] abstract class Task[T](
@@ -52,8 +53,12 @@ private[spark] abstract class Task[T](
     val stageAttemptId: Int,
     val partitionId: Int,
     // The default value is only used in tests.
-    val metrics: TaskMetrics = TaskMetrics.registered,
+    serializedTaskMetrics: Array[Byte] =
+      SparkEnv.get.closureSerializer.newInstance().serialize(TaskMetrics.registered).array(),
     @transient var localProperties: Properties = new Properties) extends Serializable {
+
+  @transient lazy val metrics: TaskMetrics =
+    SparkEnv.get.closureSerializer.newInstance().deserialize(ByteBuffer.wrap(serializedTaskMetrics))
 
   /**
    * Called by [[org.apache.spark.executor.Executor]] to run this task.
