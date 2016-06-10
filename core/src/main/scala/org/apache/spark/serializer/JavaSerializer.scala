@@ -22,6 +22,8 @@ import java.nio.ByteBuffer
 
 import scala.reflect.ClassTag
 
+import org.nustaq.serialization.{FSTObjectInput, FSTObjectOutput}
+
 import org.apache.spark.SparkConf
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.util.{ByteBufferInputStream, ByteBufferOutputStream, Utils}
@@ -29,7 +31,7 @@ import org.apache.spark.util.{ByteBufferInputStream, ByteBufferOutputStream, Uti
 private[spark] class JavaSerializationStream(
     out: OutputStream, counterReset: Int, extraDebugInfo: Boolean)
   extends SerializationStream {
-  private val objOut = new ObjectOutputStream(out)
+  private val objOut: ObjectOutput = new FSTObjectOutput(out)
   private var counter = 0
 
   /**
@@ -47,7 +49,6 @@ private[spark] class JavaSerializationStream(
     }
     counter += 1
     if (counterReset > 0 && counter >= counterReset) {
-      objOut.reset()
       counter = 0
     }
     this
@@ -60,17 +61,7 @@ private[spark] class JavaSerializationStream(
 private[spark] class JavaDeserializationStream(in: InputStream, loader: ClassLoader)
   extends DeserializationStream {
 
-  private val objIn = new ObjectInputStream(in) {
-    override def resolveClass(desc: ObjectStreamClass): Class[_] =
-      try {
-        // scalastyle:off classforname
-        Class.forName(desc.getName, false, loader)
-        // scalastyle:on classforname
-      } catch {
-        case e: ClassNotFoundException =>
-          JavaDeserializationStream.primitiveMappings.getOrElse(desc.getName, throw e)
-      }
-  }
+  private val objIn = new FSTObjectInput(in)
 
   def readObject[T: ClassTag](): T = objIn.readObject().asInstanceOf[T]
   def close() { objIn.close() }
