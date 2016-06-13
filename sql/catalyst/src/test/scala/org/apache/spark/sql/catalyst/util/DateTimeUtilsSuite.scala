@@ -22,6 +22,7 @@ import java.text.SimpleDateFormat
 import java.util.{Calendar, TimeZone}
 
 import org.apache.spark.SparkFunSuite
+import org.apache.spark.sql.catalyst.util.DateTimeTestUtils._
 import org.apache.spark.sql.catalyst.util.DateTimeUtils._
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -503,5 +504,15 @@ class DateTimeUtilsSuite extends SparkFunSuite {
     test("2011-12-25 18:00:00.123456", "JST", "2011-12-25 09:00:00.123456")
     test("2011-12-25 01:00:00.123456", "PST", "2011-12-25 09:00:00.123456")
     test("2011-12-25 17:00:00.123456", "Asia/Shanghai", "2011-12-25 09:00:00.123456")
+  }
+
+  test("millisToDays(daysToMillis(days)) === days (SPARK-15613)") {
+    for (tz <- ALL_TIMEZONES) {
+      withDefaultTimeZone(tz) {
+        for (days <- 0 to 20000) {
+          assert(millisToDays(daysToMillis(days)) === days)
+        }
+      }
+    }
   }
 }

@@ -90,6 +90,16 @@ object DateTimeUtils {
     }
   }
 
+  /**
+   * Re-initialize the current thread's thread locals. Exposed for testing.
+   */
+  private[util] def resetThreadLocals(): Unit = {
+    threadLocalGmtCalendar.remove()
+    threadLocalLocalTimeZone.remove()
+    threadLocalTimestampFormat.remove()
+    threadLocalDateFormat.remove()
+  }
+
   // we should use the exact day as Int, for example, (year, month, day) -> day
   def millisToDays(millisUtc: Long): SQLDate = {
     // SPARK-6785: use Math.floor so negative number of days (dates before 1970)
