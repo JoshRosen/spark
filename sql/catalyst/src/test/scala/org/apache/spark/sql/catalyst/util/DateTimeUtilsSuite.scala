@@ -64,9 +64,9 @@ class DateTimeUtilsSuite extends SparkFunSuite {
   }
 
   test("SPARK-6785: java date conversion before and after epoch") {
-    def checkFromToJavaDate(d1: Date): Unit = {
-      val d2 = toJavaDate(fromJavaDate(d1))
-      assert(d2.toString === d1.toString)
+    def checkFromToJavaDate(date: Date): Unit = {
+      val roundtripped = toJavaDate(fromJavaDate(date))
+      assert(roundtripped === date, s"${roundtripped.getTime} != ${date.getTime}")
     }
 
     val df1 = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
