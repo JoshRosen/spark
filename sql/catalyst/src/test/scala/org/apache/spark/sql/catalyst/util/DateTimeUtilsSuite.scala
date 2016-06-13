@@ -72,32 +72,26 @@ class DateTimeUtilsSuite extends SparkFunSuite {
     val df1 = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
     val df2 = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z")
 
-    checkFromToJavaDate(new Date(100))
+    checkFromToJavaDate(new Date(0))
 
     checkFromToJavaDate(Date.valueOf("1970-01-01"))
 
     checkFromToJavaDate(new Date(df1.parse("1970-01-01 00:00:00").getTime))
     checkFromToJavaDate(new Date(df2.parse("1970-01-01 00:00:00 UTC").getTime))
 
-    checkFromToJavaDate(new Date(df1.parse("1970-01-01 00:00:01").getTime))
-    checkFromToJavaDate(new Date(df2.parse("1970-01-01 00:00:01 UTC").getTime))
-
-    checkFromToJavaDate(new Date(df1.parse("1969-12-31 23:59:59").getTime))
-    checkFromToJavaDate(new Date(df2.parse("1969-12-31 23:59:59 UTC").getTime))
+    checkFromToJavaDate(new Date(df1.parse("1969-12-31 00:00:00").getTime))
+    checkFromToJavaDate(new Date(df2.parse("1969-12-31 00:00:00 UTC").getTime))
 
     checkFromToJavaDate(Date.valueOf("1969-01-01"))
 
     checkFromToJavaDate(new Date(df1.parse("1969-01-01 00:00:00").getTime))
     checkFromToJavaDate(new Date(df2.parse("1969-01-01 00:00:00 UTC").getTime))
 
-    checkFromToJavaDate(new Date(df1.parse("1969-01-01 00:00:01").getTime))
-    checkFromToJavaDate(new Date(df2.parse("1969-01-01 00:00:01 UTC").getTime))
+    checkFromToJavaDate(new Date(df1.parse("1989-11-09 00:00:00").getTime))
+    checkFromToJavaDate(new Date(df2.parse("1989-11-09 00:00:00 UTC").getTime))
 
-    checkFromToJavaDate(new Date(df1.parse("1989-11-09 11:59:59").getTime))
-    checkFromToJavaDate(new Date(df2.parse("1989-11-09 19:59:59 UTC").getTime))
-
-    checkFromToJavaDate(new Date(df1.parse("1776-07-04 10:30:00").getTime))
-    checkFromToJavaDate(new Date(df2.parse("1776-07-04 18:30:00 UTC").getTime))
+    checkFromToJavaDate(new Date(df1.parse("1776-07-04 00:00:00").getTime))
+    checkFromToJavaDate(new Date(df2.parse("1776-07-04 00:00:00 UTC").getTime))
   }
 
   test("millisToDays returns the correct days from epoch ") {
