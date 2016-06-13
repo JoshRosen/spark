@@ -509,8 +509,10 @@ class DateTimeUtilsSuite extends SparkFunSuite {
   test("millisToDays(daysToMillis(days)) === days (SPARK-15613)") {
     for (tz <- ALL_TIMEZONES) {
       withDefaultTimeZone(tz) {
-        for (days <- 0 to 20000) {
-          assert(millisToDays(daysToMillis(days)) === days)
+        withClue(tz) {
+          for (days <- 0 to 20000) {
+            assert(millisToDays(daysToMillis(days)) === days)
+          }
         }
       }
     }
