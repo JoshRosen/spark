@@ -20,11 +20,13 @@ package org.apache.spark.sql
 import scala.language.implicitConversions
 import scala.reflect.runtime.universe.TypeTag
 
+import org.apache.spark.annotation.Experimental
+import org.apache.spark.io.CompressionCodec
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.types._
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.SpecificMutableRow
-import org.apache.spark.sql.types.StructField
+import org.apache.spark.sql.execution.TungstenCache
+import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 /**
@@ -109,5 +111,29 @@ private[sql] abstract class SQLImplicits {
     }
     DataFrameHolder(
       _sqlContext.internalCreateDataFrame(rows, StructType(StructField("_1", dataType) :: Nil)))
+  }
+
+  /**
+   * ::Experimental::
+   *
+   * Pimp my library decorator for Tungsten caching of DataFrames.
+   * @since 1.6.0
+   */
+  @Experimental
+  implicit class TungstenCacheImplicits(df: DataFrame) {
+    /**
+     * Packs the rows of [[df]] into contiguous blocks of memory.
+     * @param compressionType "" (default), "lz4", "lzf", or "snappy", see
+     *                        [[CompressionCodec.ALL_COMPRESSION_CODECS]]
+     * @param blockSize size of each MemoryBlock (default = 4 MB)
+     */
+    def tungstenCache(compressionType: String = "", blockSize: Int = 4000000): DataFrame = {
+      val cached: RDD[InternalRow] =
+        TungstenCache.cache(
+          df.queryExecution.sparkPlan,
+          if (compressionType.isEmpty) None else Some(compressionType),
+          blockSize)
+      _sqlContext.internalCreateDataFrame(cached, df.schema)
+    }
   }
 }

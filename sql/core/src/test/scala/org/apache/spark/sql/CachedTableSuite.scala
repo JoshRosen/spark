@@ -17,7 +17,6 @@
 
 package org.apache.spark.sql
 
-import org.apache.spark.sql.execution.PhysicalRDD
 
 import scala.concurrent.duration._
 import scala.language.postfixOps
@@ -26,9 +25,10 @@ import org.scalatest.concurrent.Eventually._
 
 import org.apache.spark.Accumulators
 import org.apache.spark.sql.columnar._
+import org.apache.spark.sql.execution.PhysicalRDD
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.test.SharedSQLContext
-import org.apache.spark.storage.{StorageLevel, RDDBlockId}
+import org.apache.spark.storage.{RDDBlockId, StorageLevel}
 
 private case class BigData(s: String)
 
@@ -338,6 +338,17 @@ class CachedTableSuite extends QueryTest with SharedSQLContext {
       sqlContext.uncacheTable("t1")
       sqlContext.uncacheTable("t2")
       assert((accsSize - 2) == Accumulators.originals.size)
+    }
+  }
+
+  for (compressionCodec <- Seq("", "lz4", "lzf", "snappy")) {
+    val compressionHint = if (compressionCodec.isEmpty) "uncompressed" else compressionCodec
+    test(s"cache and read table with Tungsten cache ($compressionHint)") {
+      // Use a 0.4 KB block size to force multiple blocks
+      val tungstenCachedDF = testData.tungstenCache(compressionCodec, blockSize = 400)
+      checkAnswer(tungstenCachedDF, testData)
+      // Run the job again so that we run on the cached data:
+      checkAnswer(tungstenCachedDF, testData)
     }
   }
 

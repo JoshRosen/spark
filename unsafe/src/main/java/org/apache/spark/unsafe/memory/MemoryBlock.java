@@ -52,4 +52,11 @@ public class MemoryBlock extends MemoryLocation {
   public static MemoryBlock fromLongArray(final long[] array) {
     return new MemoryBlock(array, Platform.LONG_ARRAY_OFFSET, array.length * 8);
   }
+
+  /**
+   * Creates a memory block pointing to the memory used by the byte array.
+   */
+  public static MemoryBlock fromByteArray(final byte[] array) {
+    return new MemoryBlock(array, Platform.BYTE_ARRAY_OFFSET, array.length);
+  }
 }
