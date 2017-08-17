@@ -1,0 +1,24 @@
+---
+java:
+  java_version: java-8-openjdk
+scala:
+  sbt_version: "0.13.8"
+timeout: 3600
+cache:
+  key_paths:     # Define the files Solano will use to determine when to rebuild your cache
+  - pom.xml
+  save_paths:    # Define the paths to save into the cache
+  - HOME/.m2
+  - HOME/.ivy2
+profiles:
+  package:
+    tests:
+      - "build/sbt package && build/sbt test:package"
+  test:
+    tests:
+      - "build/sbt core/test"
+      - "build/sbt sql/test"
+      - "python/run-tests"
+pipeline:
+  package:
+   - test
