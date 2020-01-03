@@ -38,8 +38,8 @@ class GenericArrayData(val array: Array[Any]) extends ArrayData {
   def this(primitiveArray: Array[Boolean]) = this(primitiveArray.toSeq)
 
   def this(seqOrArray: Any) = this(seqOrArray match {
-    case seq: Seq[Any] => seq
-    case array: Array[_] => array.toSeq
+    case seq: Seq[Any] => seq.toArray
+    case array: Array[_] => array
   })
 
   override def copy(): ArrayData = {
