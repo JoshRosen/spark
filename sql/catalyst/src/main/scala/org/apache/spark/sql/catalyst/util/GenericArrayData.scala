@@ -18,6 +18,7 @@
 package org.apache.spark.sql.catalyst.util
 
 import scala.collection.JavaConverters._
+import scala.reflect.ClassTag
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.types.{DataType, Decimal}
@@ -39,7 +40,8 @@ class GenericArrayData(val array: Array[Any]) extends ArrayData {
 
   def this(seqOrArray: Any) = this(seqOrArray match {
     case seq: Seq[Any] => seq.toArray
-    case array: Array[_] => array
+    case array: Array[Any] => array
+    case array: Array[_] => array.toSeq.toArray(ClassTag.Any)
   })
 
   override def copy(): ArrayData = {
