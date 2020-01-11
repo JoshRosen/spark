@@ -46,7 +46,7 @@ trait InvokeLike extends Expression with NonSQLExpression {
 
   def propagateNull: Boolean
 
-  protected lazy val needNullCheck: Boolean = propagateNull && arguments.exists(_.nullable)
+  protected lazy val needArgNullCheck: Boolean = propagateNull && arguments.exists(_.nullable)
 
   /**
    * Prepares codes for arguments.
@@ -63,7 +63,7 @@ trait InvokeLike extends Expression with NonSQLExpression {
    */
   def prepareArguments(ctx: CodegenContext): (String, String, ExprValue) = {
 
-    val resultIsNull = if (needNullCheck) {
+    val resultIsNull = if (needArgNullCheck) {
       val resultIsNull = ctx.addMutableState(CodeGenerator.JAVA_BOOLEAN, "resultIsNull")
       JavaCode.isNullGlobal(resultIsNull)
     } else {
@@ -74,7 +74,7 @@ trait InvokeLike extends Expression with NonSQLExpression {
       argValue
     }
 
-    val argCodes = if (needNullCheck) {
+    val argCodes = if (needArgNullCheck) {
       val reset = s"$resultIsNull = false;"
       val argCodes = arguments.zipWithIndex.map { case (e, i) =>
         val expr = e.genCode(ctx)
@@ -124,7 +124,7 @@ trait InvokeLike extends Expression with NonSQLExpression {
       input: InternalRow,
       dataType: DataType): Any = {
     val args = arguments.map(e => e.eval(input).asInstanceOf[Object])
-    if (needNullCheck && args.exists(_ == null)) {
+    if (needArgNullCheck && args.exists(_ == null)) {
       // return null if one of arguments is null
       null
     } else {
@@ -224,7 +224,7 @@ case class StaticInvoke(
     Utils.classForName(objectName)
   }
 
-  override def nullable: Boolean = needNullCheck || returnNullable
+  override def nullable: Boolean = needArgNullCheck || returnNullable
   override def children: Seq[Expression] = arguments
 
   lazy val argClasses = ScalaReflection.expressionJavaClasses(arguments)
@@ -308,7 +308,7 @@ case class Invoke(
 
   lazy val argClasses = ScalaReflection.expressionJavaClasses(arguments)
 
-  override def nullable: Boolean = targetObject.nullable || needNullCheck || returnNullable
+  override def nullable: Boolean = targetObject.nullable || needArgNullCheck || returnNullable
   override def children: Seq[Expression] = targetObject +: arguments
 
   private lazy val encodedFunctionName = TermName(functionName).encodedName.toString
@@ -442,7 +442,7 @@ case class Invoke(
     }
 
     // Prepare the function's arguments and call the function
-    val prepareArgsThenCallFunction = if (needNullCheck) {
+    val prepareArgsThenCallFunction = if (needArgNullCheck) {
       // propagateNull == true and at least one argument is nullable, so we must
       // guard the function invocation with a null check.
       s"""
@@ -539,7 +539,7 @@ case class NewInstance(
     outerPointer: Option[() => AnyRef]) extends InvokeLike {
   private val className = cls.getName
 
-  override def nullable: Boolean = needNullCheck
+  override def nullable: Boolean = needArgNullCheck
 
   override def children: Seq[Expression] = arguments
 
