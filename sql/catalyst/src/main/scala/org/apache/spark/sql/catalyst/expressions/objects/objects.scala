@@ -363,21 +363,50 @@ case class Invoke(
     val returnPrimitive = method.isDefined && method.get.getReturnType.isPrimitive
 
     // If this expression is non-nullable then we can optimize the initialization
-    // of `ev.isNull` and `ev.value`: in that case, `ev.value` will only be
-    // assigned to once, so we can simply initialize it during that assignment.
-    val valueLVal = if (nullable) {
+    // of `ev.isNull` by hard coding it to a `False` literal: the rest of this
+    // method's code generation is specialized such that we'll never need to assign
+    // to `ev.isNull` when `nullable == false`.
+    //
+    // Similarly, if the expression's target object is non-nullable and we don't need
+    // to perform argument null checks then we can initialize `ev.value` during its
+    // only assignment.
+    val valueLVal = if (targetObject.nullable || needArgNullCheck) {
       s"${ev.value}"
     } else {
       s"$javaType ${ev.value}"
     }
-    val initializeIsNullAndValue = if (nullable) {
-      s"""
-        boolean ${ev.isNull} = true;
-        $javaType ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
-      """.stripMargin
+    val initializeValue = if (targetObject.nullable || needArgNullCheck) {
+      s"$javaType ${ev.value} = ${CodeGenerator.defaultValue(dataType)};"
+    } else {
+      ""
+    }
+    val initializeIsNull = if (nullable) {
+      // The following is an optimization to avoid the unnecessary second
+      // assignment in
+      //
+      //   boolean isNull = true;
+      //   isNull = false;
+      //   if (result == null) {
+      //      isNull = true;
+      //   }
+      //
+      // in cases where we only need to perform null checks due to function
+      // return value nullability: in that case, we can just initialize isNull
+      // to `true`. We still need to initialize it to `false` if we have target
+      // or argument null checks, though.
+
+      val startingIsNullValue = if (targetObject.nullable || needArgNullCheck) {
+        "true"
+      } else {
+        // Initialize `isNull` to `false` because it will be re-assigned
+        // to `true` only if the function result's null check returns `true.
+        assert(returnNullable)
+        "false"
+      }
+      s"boolean ${ev.isNull} = $startingIsNullValue;"
     } else {
       ev.isNull = FalseLiteral
-      ""
+      ""  // no initialization code needed, since there's no variable
     }
 
     // Call the function and assign the result to the given value.
@@ -411,15 +440,15 @@ case class Invoke(
       }
     }
 
-    // Call the function and perform null-checking on the result (if necessary):
+    // Call the function and perform null checking on the result (if necessary):
     val callFunctionAndPerformNullChecks = if (returnPrimitive || !returnNullable) {
       // The function result is guaranteed to be non-null, so we can directly store it:
       callFuncAndAssignResultTo(valueLVal)
     } else {
-      // The function might return nulls, so we must add a null-check:
+      // The function might return nulls, so we must add a null check:
       if (CodeGenerator.isPrimitiveType(javaType)) {
         // The function returns a possibly-null boxed primitive, so we must temporarily store
-        // the boxed value in a different variable in order to perform the null-check:
+        // the boxed value in a different variable in order to perform the null check:
         val funcResult = ctx.freshName("funcResult")
         s"""
           ${callFuncAndAssignResultTo(s"${CodeGenerator.boxedType(javaType)} $funcResult")}
@@ -431,7 +460,7 @@ case class Invoke(
         """
       } else {
         // The function returns a possibly-null object, so we can directly store it and then read
-        // it back in order to perform the null-check:
+        // it back in order to perform the null check:
         s"""
           ${callFuncAndAssignResultTo(valueLVal)}
           if (${ev.value} == null) {
@@ -455,21 +484,26 @@ case class Invoke(
     } else {
       // propagateNull == false or all arguments are non-nullable (a function with
       // zero arguments is a special case of this), so we don't need to perform
-      // argument null-checks here.
-      //
-      // Logically, the value of `ev.isNull` flips to `false` here, since from this
-      // point forward we'll only set `ev.isNull = true` when the function's
-      // result is null (and that assignment happens inside callFunctionAndPerformNullChecks).
-      //
-      // However, we can't unconditionally set `ev.isNull = false` because there won't be
-      // an `ev.isNull` variable when Invoke is non-nullable, hence this additional layer:
-      if (nullable) {
+      // argument null checks here. We might need to udpate `ev.isNull`, though:
+      // the value of `ev.isNull` should be `false` before we call
+      // callFunctionAndPerformNullChecks, but it would have been set to `true`
+      // if we performed target null checks (the "argument null checks case" is
+      // handled above).
+      if (targetObject.nullable) {
+        // `ev.isNull` was initialized to `true`, so we must flip it to `false` here:
         s"""
           $argCode
           ${ev.isNull} = false;
           $callFunctionAndPerformNullChecks
         """
       } else {
+        // Here, either
+        //
+        //   (a) Invoke isn't nullable, so we never need to assign to `ev.isNull`, or
+        //   (b) It _is_ nullable but _only_ because the function might return null
+        //       outputs for non-null inputs. In that case `ev.isNull` has already
+        //       been initialized to `false` so there's no need to assign it here.
+        assert(!nullable || (returnNullable && !targetObject.nullable && !needArgNullCheck))
         s"""
           $argCode
           $callFunctionAndPerformNullChecks
@@ -497,9 +531,11 @@ case class Invoke(
     }
 
     val code = obj.code + code"""
-      $initializeIsNullAndValue
+      $initializeValue
+      $initializeIsNull
       $prepareTargetAndArgsThenCallFunction
      """
+
     ev.copy(code = code)
   }
 
