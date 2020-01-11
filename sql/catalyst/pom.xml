@@ -101,6 +101,10 @@
       <artifactId>commons-compiler</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.codehaus.janino</groupId>
+      <artifactId>commons-compiler-jdk</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.antlr</groupId>
       <artifactId>antlr4-runtime</artifactId>
     </dependency>

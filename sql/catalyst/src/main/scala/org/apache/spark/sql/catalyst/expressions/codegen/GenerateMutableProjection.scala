@@ -17,12 +17,15 @@
 
 package org.apache.spark.sql.catalyst.expressions.codegen
 
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.BindReferences.bindReferences
 import org.apache.spark.sql.catalyst.expressions.aggregate.NoOp
 
 // MutableProjection is not accessible in Java
-abstract class BaseMutableProjection extends MutableProjection
+abstract class BaseMutableProjection extends MutableProjection {
+  override def apply(v1: InternalRow): InternalRow
+}
 
 /**
  * Generates byte code that produces a [[InternalRow]] object that can update itself based on a new
@@ -128,8 +131,7 @@ object GenerateMutableProjection extends CodeGenerator[Seq[Expression], MutableP
           return (InternalRow) mutableRow;
         }
 
-        public java.lang.Object apply(java.lang.Object _i) {
-          InternalRow ${ctx.INPUT_ROW} = (InternalRow) _i;
+        public InternalRow apply(InternalRow ${ctx.INPUT_ROW}) {
           $evalSubexpr
           $allProjections
           // copy all the results into MutableRow

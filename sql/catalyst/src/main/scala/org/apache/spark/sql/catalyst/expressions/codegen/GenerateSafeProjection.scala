@@ -30,7 +30,9 @@ import org.apache.spark.sql.types._
 /**
  * Java can not access Projection (in package object)
  */
-abstract class BaseProjection extends Projection {}
+abstract class BaseProjection extends Projection {
+  override def apply(v1: InternalRow): InternalRow
+}
 
 /**
  * Generates byte code that produces a [[InternalRow]] object (not an [[UnsafeRow]]) that can update
@@ -188,8 +190,7 @@ object GenerateSafeProjection extends CodeGenerator[Seq[Expression], Projection]
           ${ctx.initPartition()}
         }
 
-        public java.lang.Object apply(java.lang.Object _i) {
-          InternalRow ${ctx.INPUT_ROW} = (InternalRow) _i;
+        public InternalRow apply(InternalRow ${ctx.INPUT_ROW}) {
           $allExpressions
           return mutableRow;
         }

@@ -964,6 +964,12 @@ object SQLConf {
     .intConf
     .createWithDefault(100)
 
+  val CODEGEN_COMPILER = buildConf("spark.sql.codegen.compiler")
+    .internal()
+    .stringConf
+    .checkValues(Set("janino", "jdk"))
+    .createWithDefault("janino")
+
   val CODEGEN_FACTORY_MODE = buildConf("spark.sql.codegen.factoryMode")
     .doc("This config determines the fallback behavior of several codegen generators " +
       "during tests. `FALLBACK` means trying codegen first and then fallbacking to " +
@@ -2308,6 +2314,8 @@ class SQLConf extends Serializable with Logging {
   def wholeStageUseIdInClassName: Boolean = getConf(WHOLESTAGE_CODEGEN_USE_ID_IN_CLASS_NAME)
 
   def wholeStageMaxNumFields: Int = getConf(WHOLESTAGE_MAX_NUM_FIELDS)
+
+  def codegenCompiler: String = getConf(CODEGEN_COMPILER)
 
   def codegenFallback: Boolean = getConf(CODEGEN_FALLBACK)
 

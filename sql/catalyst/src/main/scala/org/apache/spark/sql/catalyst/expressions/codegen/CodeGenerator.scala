@@ -27,8 +27,11 @@ import scala.util.control.NonFatal
 
 import com.google.common.cache.{CacheBuilder, CacheLoader}
 import com.google.common.util.concurrent.{ExecutionError, UncheckedExecutionException}
-import org.codehaus.commons.compiler.CompileException
-import org.codehaus.janino.{ByteArrayClassLoader, ClassBodyEvaluator, InternalCompilerException, SimpleCompiler}
+import javax.tools.{JavaFileManager, JavaFileObject}
+import org.apache.commons.io.IOUtils
+import org.codehaus.commons.compiler.{CompileException, IClassBodyEvaluator}
+import org.codehaus.commons.compiler.jdk.JavaFileManagerClassLoader
+import org.codehaus.janino.{ByteArrayClassLoader, InternalCompilerException}
 import org.codehaus.janino.util.ClassFile
 
 import org.apache.spark.{TaskContext, TaskKilledException}
@@ -1330,10 +1333,13 @@ object CodeGenerator extends Logging {
    * Compile the Java source code into a Java class, using Janino.
    */
   private[this] def doCompile(code: CodeAndComment): (GeneratedClass, ByteCodeStats) = {
-    val evaluator = new ClassBodyEvaluator()
+    val evaluator: IClassBodyEvaluator = SQLConf.get.codegenCompiler match {
+      case "janino" => new org.codehaus.janino.ClassBodyEvaluator()
+      case "jdk" => new org.codehaus.commons.compiler.jdk.ClassBodyEvaluator()
+    }
 
     // A special classloader used to wrap the actual parent classloader of
-    // [[org.codehaus.janino.ClassBodyEvaluator]] (see CodeGenerator.doCompile). This classloader
+    // [[IClassBodyEvaluator]] (see CodeGenerator.doCompile). This classloader
     // does not throw a ClassNotFoundException with a cause set (i.e. exception.getCause returns
     // a null). This classloader is needed because janino will throw the exception directly if
     // the parent classloader throws a ClassNotFoundException with cause set instead of trying to
@@ -1401,15 +1407,35 @@ object CodeGenerator extends Logging {
    * # of inner classes) of generated classes by inspecting Janino classes.
    * Also, this method updates the metrics information.
    */
-  private def updateAndGetCompilationStats(evaluator: ClassBodyEvaluator): ByteCodeStats = {
+  private def updateAndGetCompilationStats(evaluator: IClassBodyEvaluator): ByteCodeStats = {
     // First retrieve the generated classes.
     val classes = {
-      val resultField = classOf[SimpleCompiler].getDeclaredField("result")
-      resultField.setAccessible(true)
-      val loader = resultField.get(evaluator).asInstanceOf[ByteArrayClassLoader]
-      val classesField = loader.getClass.getDeclaredField("classes")
-      classesField.setAccessible(true)
-      classesField.get(loader).asInstanceOf[JavaMap[String, Array[Byte]]].asScala
+      SQLConf.get.codegenCompiler match {
+        case "janino" =>
+          val resultField = classOf[org.codehaus.janino.SimpleCompiler].getDeclaredField("result")
+          resultField.setAccessible(true)
+          val loader = resultField.get(evaluator).asInstanceOf[ByteArrayClassLoader]
+          val classesField = loader.getClass.getDeclaredField("classes")
+          classesField.setAccessible(true)
+          classesField.get(loader).asInstanceOf[JavaMap[String, Array[Byte]]].asScala
+        case "jdk" =>
+          val resultField =
+            classOf[org.codehaus.commons.compiler.jdk.SimpleCompiler].getDeclaredField("result")
+          resultField.setAccessible(true)
+          val loader = resultField.get(evaluator).asInstanceOf[JavaFileManagerClassLoader]
+          val fileManagerField = loader.getClass.getDeclaredField("javaFileManager")
+          fileManagerField.setAccessible(true)
+          val fileManager = fileManagerField.get(loader).asInstanceOf[JavaFileManager]
+          val classesField = fileManager.getClass.getDeclaredField("classFiles")
+          classesField.setAccessible(true)
+          classesField.get(fileManager)
+            .asInstanceOf[JavaMap[String, JavaFileObject]]
+            .asScala
+            .mapValues(jfo =>
+              IOUtils.toByteArray(jfo.openInputStream())
+          )
+      }
+
     }
 
     // Then walk the classes to get at the method bytecode.
