@@ -349,6 +349,11 @@ case class Invoke(
     //       - Object
     //   - Does the method declare checked exceptions?
     //   - Should we call the method if some of its arguments are null?
+    //
+    // The code below is structured in a relatively bottom-up, inside-out fashion:
+    // it begins with function invocation and wraps that in successive layers
+    // of result casting, exception handling, result null-handling, argument
+    // null-handling, and target object null-handling.
 
     val javaType = CodeGenerator.javaType(dataType)
     val obj = targetObject.genCode(ctx)
@@ -356,6 +361,24 @@ case class Invoke(
     val (argCode, argString, resultIsNull) = prepareArguments(ctx)
 
     val returnPrimitive = method.isDefined && method.get.getReturnType.isPrimitive
+
+    // If this expression is non-nullable then we can optimize the initialization
+    // of `ev.isNull` and `ev.value`: in that case, `ev.value` will only be
+    // assigned to once, so we can simply initialize it during that assignment.
+    val valueLVal = if (nullable) {
+      s"${ev.value}"
+    } else {
+      s"$javaType ${ev.value}"
+    }
+    val initializeIsNullAndValue = if (nullable) {
+      s"""
+        boolean ${ev.isNull} = true;
+        $javaType ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
+      """.stripMargin
+    } else {
+      ev.isNull = FalseLiteral
+      ""
+    }
 
     // Call the function and assign the result to the given value.
     def callFuncAndAssignResultTo(resultVal: String) = {
@@ -389,9 +412,9 @@ case class Invoke(
     }
 
     // Call the function and perform null-checking on the result (if necessary):
-    val evaluate = if (returnPrimitive || !returnNullable) {
+    val callFunctionAndPerformNullChecks = if (returnPrimitive || !returnNullable) {
       // The function result is guaranteed to be non-null, so we can directly store it:
-      callFuncAndAssignResultTo(ev.value)
+      callFuncAndAssignResultTo(valueLVal)
     } else {
       // The function might return nulls, so we must add a null-check:
       if (CodeGenerator.isPrimitiveType(javaType)) {
@@ -401,7 +424,7 @@ case class Invoke(
         s"""
           ${callFuncAndAssignResultTo(s"${CodeGenerator.boxedType(javaType)} $funcResult")}
           if ($funcResult != null) {
-            ${ev.value} = $funcResult;
+            $valueLVal = $funcResult;
           } else {
             ${ev.isNull} = true;
           }
@@ -410,24 +433,72 @@ case class Invoke(
         // The function returns a possibly-null object, so we can directly store it and then read
         // it back in order to perform the null-check:
         s"""
-          ${callFuncAndAssignResultTo(ev.value)}
-          if (${ev.value} == null) {
+          ${callFuncAndAssignResultTo(valueLVal)}
+          if ($valueLVal == null) {
             ${ev.isNull} = true;
           }
         """
       }
     }
 
-    val code = obj.code + code"""
-      boolean ${ev.isNull} = true;
-      $javaType ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
-      if (!${obj.isNull}) {
+    // Prepare the function's arguments and call the function
+    val prepareArgsThenCallFunction = if (needNullCheck) {
+      // propagateNull == true and at least one argument is nullable, so we must
+      // guard the function invocation with a null check.
+      s"""
         $argCode
         ${ev.isNull} = $resultIsNull;
         if (!${ev.isNull}) {
-          $evaluate
+          $callFunctionAndPerformNullChecks
         }
+      """
+    } else {
+      // propagateNull == false or all arguments are non-nullable (a function with
+      // zero arguments is a special case of this), so we don't need to perform
+      // argument null-checks here.
+      //
+      // Logically, the value of `ev.isNull` flips to `false` here, since from this
+      // point forward we'll only set `ev.isNull = true` when the function's
+      // result is null (and that assignment happens inside callFunctionAndPerformNullChecks).
+      //
+      // However, we can't unconditionally set `ev.isNull = false` because there won't be
+      // an `ev.isNull` variable when Invoke is non-nullable, hence this additional layer:
+      if (nullable) {
+        s"""
+          $argCode
+          ${ev.isNull} = false;
+          $callFunctionAndPerformNullChecks
+        """
+      } else {
+        s"""
+          $argCode
+          $callFunctionAndPerformNullChecks
+        """
       }
+    }
+
+    // Fetch the target, then prepare the arguments and call the function
+    val prepareTargetAndArgsThenCallFunction = if (targetObject.nullable) {
+      // The target object might be nullable, so we must guard the function
+      // invocation with a null check.
+      s"""
+        if (!${obj.isNull}) {
+          $prepareArgsThenCallFunction
+        }
+      """
+    } else {
+      // The target object is guaranteed to be non-null.
+      // One notable case where this branch is hit: SPARK-26730 changed ScalaReflection
+      // to wrap KnownNotNull() around the object passed to Invoke: if we're serializing
+      // a struct then higher-level code will skip the per-field Invoke calls if the
+      // struct itself is null, so when we _do_ call Invoke we're guaranteed that the
+      // object is non-null.
+      prepareArgsThenCallFunction
+    }
+
+    val code = obj.code + code"""
+      $initializeIsNullAndValue
+      $prepareTargetAndArgsThenCallFunction
      """
     ev.copy(code = code)
   }
