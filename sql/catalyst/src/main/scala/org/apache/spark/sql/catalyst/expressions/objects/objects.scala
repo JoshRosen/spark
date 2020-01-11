@@ -434,7 +434,7 @@ case class Invoke(
         // it back in order to perform the null-check:
         s"""
           ${callFuncAndAssignResultTo(valueLVal)}
-          if ($valueLVal == null) {
+          if (${ev.value} == null) {
             ${ev.isNull} = true;
           }
         """
