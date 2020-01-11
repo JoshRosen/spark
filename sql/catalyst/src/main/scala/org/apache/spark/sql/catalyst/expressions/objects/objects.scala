@@ -340,6 +340,16 @@ case class Invoke(
   }
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    // This method is complex because there's a huge cross-product of cases to consider:
+    //
+    //   - Is the target object nullable?
+    //   - What is the method's return type?
+    //       - Primitive
+    //       - Boxed primitive
+    //       - Object
+    //   - Does the method declare checked exceptions?
+    //   - Should we call the method if some of its arguments are null?
+
     val javaType = CodeGenerator.javaType(dataType)
     val obj = targetObject.genCode(ctx)
 
