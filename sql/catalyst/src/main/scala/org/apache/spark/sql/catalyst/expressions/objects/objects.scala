@@ -348,81 +348,53 @@ case class Invoke(
     val returnPrimitive = method.isDefined && method.get.getReturnType.isPrimitive
     val needTryCatch = method.isDefined && method.get.getExceptionTypes.nonEmpty
 
-    // Cross-product of
-    //    (a) can it throw an exception or not
-    //    (b) is the invocation target nullable?
-    //    (c) is the return type primitive?
-    //    (d) is the return type nullable?
-    //    (e) are there arguments / are the arguments nullable?
-
-    def maybeWrapInTryCatch(block: String): String = if (needTryCatch) {
-      """
+    def getFuncResult(resultVal: String, funcCall: String): String = if (needTryCatch) {
+      s"""
         try {
-          $block
+          $resultVal = $funcCall;
         } catch (Exception e) {
           org.apache.spark.unsafe.Platform.throwException(e);
         }
       """
     } else {
-      block
+      s"$resultVal = $funcCall;"
     }
 
-    val invokeFunctionOnObj = s"${obj.value}.$encodedFunctionName($argString)"
-
     val evaluate = if (returnPrimitive) {
-      s"${ev.value} = $invokeFunctionOnObj;"
+      getFuncResult(ev.value, s"${obj.value}.$encodedFunctionName($argString)")
     } else {
+      val funcResult = ctx.freshName("funcResult")
       // If the function can return null, we do an extra check to make sure our null bit is still
       // set correctly.
-      val invokeAndCast = if (!returnNullable) {
-        s"${ev.value} = (${CodeGenerator.boxedType(javaType)}) $invokeFunctionOnObj;"
+      val assignResult = if (!returnNullable) {
+        s"${ev.value} = (${CodeGenerator.boxedType(javaType)}) $funcResult;"
       } else {
         s"""
-          ${ev.value} = (${CodeGenerator.boxedType(javaType)}) $invokeFunctionOnObj;
-          if (${ev.value} == null) {
+          if ($funcResult != null) {
+            ${ev.value} = (${CodeGenerator.boxedType(javaType)}) $funcResult;
+          } else {
             ${ev.isNull} = true;
           }
         """
       }
-      maybeWrapInTryCatch(invokeAndCast)
+      s"""
+        Object $funcResult = null;
+        ${getFuncResult(funcResult, s"${obj.value}.$encodedFunctionName($argString)")}
+        $assignResult
+      """
     }
 
-    val code = {
-      if (arguments.isEmpty && returnPrimitive && !needTryCatch && !targetObject.nullable) {
-        obj.code + code"""
-          boolean ${ev.isNull} = false;
-          $javaType ${ev.value} = $invokeFunctionOnObj;
-        """
-      } else if (targetObject.nullable) {
-        obj.code + code"""
-          boolean ${ev.isNull} = true;
-          $javaType ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
-          if (!${obj.isNull}) {
-            $argCode
-            ${ev.isNull} = $resultIsNull;
-            if (!${ev.isNull}) {
-              $evaluate
-            }
-          }
-         """
-      } else { // The target object is non-nullable.
-        if (arguments.nonEmpty) {
-          obj.code + code"""
-            $argCode
-            $javaType ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
-            boolean ${ev.isNull} = $resultIsNull;
-            if (!${ev.isNull}) {
-              $evaluate
-            }
-           """
-        } else {
-          obj.code + code"""
-            $javaType ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
-            $evaluate
-           """
+    val code = obj.code + code"""
+      boolean ${ev.isNull} = true;
+      $javaType ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
+      if (!${obj.isNull}) {
+        $argCode
+        ${ev.isNull} = $resultIsNull;
+        if (!${ev.isNull}) {
+          $evaluate
         }
       }
-    }
+     """
     ev.copy(code = code)
   }
 
