@@ -346,42 +346,66 @@ case class Invoke(
     val (argCode, argString, resultIsNull) = prepareArguments(ctx)
 
     val returnPrimitive = method.isDefined && method.get.getReturnType.isPrimitive
-    val needTryCatch = method.isDefined && method.get.getExceptionTypes.nonEmpty
 
-    def getFuncResult(resultVal: String, funcCall: String): String = if (needTryCatch) {
-      s"""
-        try {
-          $resultVal = $funcCall;
-        } catch (Exception e) {
-          org.apache.spark.unsafe.Platform.throwException(e);
-        }
-      """
-    } else {
-      s"$resultVal = $funcCall;"
+    // Call the function and assign the result to the given value.
+    def callFuncAndAssignResultTo(resultVal: String) = {
+      val funcCall = s"${obj.value}.$encodedFunctionName($argString)"
+
+      // If the method's return type doesn't match this Invoke's result type (which could
+      // happen due to type erasure, e.g. for Tuples) then we'll need to add a cast:
+      val methodReturnsCorrectTypeAlready =
+      method.isDefined && method.get.getReturnType == CodeGenerator.javaClass(dataType)
+      val cast = if (returnPrimitive || methodReturnsCorrectTypeAlready) {
+        ""
+      } else {
+        s"(${CodeGenerator.boxedType(javaType)}) "
+      }
+
+      // If the method declares checked exceptions then we need to wrap the call
+      // in a try-catch block because we can't assume that those checked exceptions
+      // are declared in this code's enclosing method
+      val needTryCatch = method.isDefined && method.get.getExceptionTypes.nonEmpty
+      if (needTryCatch) {
+        s"""
+          try {
+            $resultVal = $cast$funcCall;
+          } catch (Exception e) {
+            org.apache.spark.unsafe.Platform.throwException(e);
+          }
+        """
+      } else {
+        s"$resultVal = $cast$funcCall;"
+      }
     }
 
-    val evaluate = if (returnPrimitive) {
-      getFuncResult(ev.value, s"${obj.value}.$encodedFunctionName($argString)")
+    // Call the function and perform null-checking on the result (if necessary):
+    val evaluate = if (returnPrimitive || !returnNullable) {
+      // The function result is guaranteed to be non-null, so we can directly store it:
+      callFuncAndAssignResultTo(ev.value)
     } else {
-      val funcResult = ctx.freshName("funcResult")
-      // If the function can return null, we do an extra check to make sure our null bit is still
-      // set correctly.
-      val assignResult = if (!returnNullable) {
-        s"${ev.value} = (${CodeGenerator.boxedType(javaType)}) $funcResult;"
-      } else {
+      // The function might return nulls, so we must add a null-check:
+      if (CodeGenerator.isPrimitiveType(javaType)) {
+        // The function returns a possibly-null boxed primitive, so we must temporarily store
+        // the boxed value in a different variable in order to perform the null-check:
+        val funcResult = ctx.freshName("funcResult")
         s"""
+          ${callFuncAndAssignResultTo(s"${CodeGenerator.boxedType(javaType)} $funcResult")}
           if ($funcResult != null) {
-            ${ev.value} = (${CodeGenerator.boxedType(javaType)}) $funcResult;
+            ${ev.value} = $funcResult;
           } else {
             ${ev.isNull} = true;
           }
         """
+      } else {
+        // The function returns a possibly-null object, so we can directly store it and then read
+        // it back in order to perform the null-check:
+        s"""
+          ${callFuncAndAssignResultTo(ev.value)}
+          if (${ev.value} == null) {
+            ${ev.isNull} = true;
+          }
+        """
       }
-      s"""
-        Object $funcResult = null;
-        ${getFuncResult(funcResult, s"${obj.value}.$encodedFunctionName($argString)")}
-        $assignResult
-      """
     }
 
     val code = obj.code + code"""
