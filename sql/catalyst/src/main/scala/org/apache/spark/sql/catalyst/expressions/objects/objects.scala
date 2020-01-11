@@ -360,26 +360,73 @@ case class Invoke(
 
     val (argCode, argString, resultIsNull) = prepareArguments(ctx)
 
-    val returnPrimitive = method.isDefined && method.get.getReturnType.isPrimitive
+    // First, define some common variables / conditions which we'll use to guide the rest
+    // of the codegen:
 
-    // If this expression is non-nullable then we can optimize the initialization
-    // of `ev.isNull` by hard coding it to a `False` literal: the rest of this
-    // method's code generation is specialized such that we'll never need to assign
-    // to `ev.isNull` when `nullable == false`.
+    // Determine whether the function returns an unboxed primitive.
+    // `functionReturnsPrimitive == false` means that either
+    //    (a) the method returns a non-primitive, or
+    //    (b) `targetObject` isn't an ObjectType and `method.isDefined == false`. This can
+    //         happen if `targetObject.dataType` is a StructType and Invoke is being used
+    //         to call methods on InternalRow.
     //
-    // Similarly, if the expression's target object is non-nullable and we don't need
-    // to perform argument null checks then we can initialize `ev.value` during its
-    // only assignment.
-    val valueLVal = if (targetObject.nullable || needArgNullCheck) {
-      s"${ev.value}"
-    } else {
-      s"$javaType ${ev.value}"
+    // In the second case `functionReturnsPrimitive` may return a false-negative here,
+    // claiming that a method returns a boxed object when it actually returns a primitive.
+    // That's technically safe, but will lead to less compact generated code due because
+    // we will generate unnecessary variables and casts; fixing this is left to future work.
+    val functionReturnsPrimitive = method.isDefined && method.get.getReturnType.isPrimitive
+
+    // Determine whether `ev.value` is an unboxed primitive:
+    val evValueTypeIsPrimitive = CodeGenerator.isPrimitiveType(javaType)
+
+    // Determine whether we need to cast the function's return value before assigning it
+    // to `ev.value`:
+    val needToCastFunctionResult = {
+      if (functionReturnsPrimitive) {
+        // Don't need to explicitly cast primitive return values
+        // TODO: this assumes that casting is only used for erasure and not for changing
+        // primitives into other types (e.g casting a long to an integer). May want to
+        // add an assertion for this.
+        false
+      } else if (method.isDefined) {
+        // If the return type is non-primitive then we only need casts in case of type
+        // erasure. For example, if we're reading fields from a Tuple then the method
+        // return types might have been erased to `Object.
+        method.get.getReturnType != CodeGenerator.javaClass(dataType)
+      } else {
+        // `method` is undefined, so conservatively insert a possibly-unnecessary cast.
+        assert(!targetObject.dataType.isInstanceOf[ObjectType])
+        true
+      }
     }
-    val initializeValue = if (targetObject.nullable || needArgNullCheck) {
-      s"$javaType ${ev.value} = ${CodeGenerator.defaultValue(dataType)};"
-    } else {
-      ""
+
+    // Determine whether `ev.value` can be `final`, with initialization and assignment
+    // performed at the same time:
+    val evValueIsAssignedOnlyOnce = {
+      if (targetObject.nullable || needArgNullCheck) {
+        // We're performing null checks before we actually call the function, so we
+        // need to initialize `ev.null` and then assign to it separately (inside of
+        // an `if`):
+        false
+      } else if (returnNullable) {
+        if (needToCastFunctionResult && evValueTypeIsPrimitive) {
+          // The function returns a boxed primitive and we need to perform a
+          // null check, so we need to store the boxed form in a separate variable
+          // in order to perform the check.
+          false
+        } else {
+          // The function returns an object, so we can store it directly to `ev.value`
+          // and then check `ev.value` for null:
+          true
+        }
+      } else {
+        // Invoke's result is non-nullable, so we can just directly assign it:
+        assert(!nullable)
+        true
+      }
     }
+
+    // Initialization of `ev.isNull`
     val initializeIsNull = if (nullable) {
       // The following is an optimization to avoid the unnecessary second
       // assignment in
@@ -409,18 +456,14 @@ case class Invoke(
       ""  // no initialization code needed, since there's no variable
     }
 
-    // Call the function and assign the result to the given value.
-    def callFuncAndAssignResultTo(resultVal: String) = {
+    // Helper method the function and assign the result to the given lvalue.
+    def callFuncAndAssignResultTo(resultLVal: String) = {
       val funcCall = s"${obj.value}.$encodedFunctionName($argString)"
 
-      // If the method's return type doesn't match this Invoke's result type (which could
-      // happen due to type erasure, e.g. for Tuples) then we'll need to add a cast:
-      val methodReturnsCorrectTypeAlready =
-      method.isDefined && method.get.getReturnType == CodeGenerator.javaClass(dataType)
-      val cast = if (returnPrimitive || methodReturnsCorrectTypeAlready) {
-        ""
-      } else {
+      val cast = if (needToCastFunctionResult) {
         s"(${CodeGenerator.boxedType(javaType)}) "
+      } else {
+        ""
       }
 
       // If the method declares checked exceptions then we need to wrap the call
@@ -430,30 +473,43 @@ case class Invoke(
       if (needTryCatch) {
         s"""
           try {
-            $resultVal = $cast$funcCall;
+            $resultLVal = $cast$funcCall;
           } catch (Exception e) {
             org.apache.spark.unsafe.Platform.throwException(e);
           }
         """
       } else {
-        s"$resultVal = $cast$funcCall;"
+        s"$resultLVal = $cast$funcCall;"
       }
     }
 
+    val evValueDeclarationLhs = s"$javaType ${ev.value}"
+
     // Call the function and perform null checking on the result (if necessary):
-    val callFunctionAndPerformNullChecks = if (returnPrimitive || !returnNullable) {
-      // The function result is guaranteed to be non-null, so we can directly store it:
-      callFuncAndAssignResultTo(valueLVal)
+    val canSkipReturnValueNullChecks = !returnNullable || functionReturnsPrimitive
+    val callFunctionAndPerformNullChecks = if (canSkipReturnValueNullChecks) {
+      // The function return value doesn't need null checks, but if we performed
+      // earlier null checks for the target or its arguments then we'd need to assign
+      // the result to the an already-declared `ev.value` variable.
+      if (targetObject.nullable || needArgNullCheck) {
+        assert(!evValueIsAssignedOnlyOnce)
+        callFuncAndAssignResultTo(s"${ev.value}")
+      } else {
+        assert(evValueIsAssignedOnlyOnce)
+        callFuncAndAssignResultTo(evValueDeclarationLhs)
+      }
     } else {
-      // The function might return nulls, so we must add a null check:
-      if (CodeGenerator.isPrimitiveType(javaType)) {
+      // We must add a null check:
+      if (evValueTypeIsPrimitive) {
         // The function returns a possibly-null boxed primitive, so we must temporarily store
         // the boxed value in a different variable in order to perform the null check:
+        assert(!evValueIsAssignedOnlyOnce)
         val funcResult = ctx.freshName("funcResult")
+        val funcResultDeclarationLhs = s"${CodeGenerator.boxedType(javaType)} $funcResult"
         s"""
-          ${callFuncAndAssignResultTo(s"${CodeGenerator.boxedType(javaType)} $funcResult")}
+          ${callFuncAndAssignResultTo(funcResultDeclarationLhs)}
           if ($funcResult != null) {
-            $valueLVal = $funcResult;
+            ${ev.value} = $funcResult;
           } else {
             ${ev.isNull} = true;
           }
@@ -461,8 +517,14 @@ case class Invoke(
       } else {
         // The function returns a possibly-null object, so we can directly store it and then read
         // it back in order to perform the null check:
+        val assignmentTarget = if (targetObject.nullable || needArgNullCheck) {
+          s"${ev.value}"
+        } else {
+          assert(evValueIsAssignedOnlyOnce)
+          evValueDeclarationLhs
+        }
         s"""
-          ${callFuncAndAssignResultTo(valueLVal)}
+          ${callFuncAndAssignResultTo(assignmentTarget)}
           if (${ev.value} == null) {
             ${ev.isNull} = true;
           }
@@ -484,7 +546,7 @@ case class Invoke(
     } else {
       // propagateNull == false or all arguments are non-nullable (a function with
       // zero arguments is a special case of this), so we don't need to perform
-      // argument null checks here. We might need to udpate `ev.isNull`, though:
+      // argument null checks here. We might need to update `ev.isNull`, though:
       // the value of `ev.isNull` should be `false` before we call
       // callFunctionAndPerformNullChecks, but it would have been set to `true`
       // if we performed target null checks (the "argument null checks case" is
@@ -530,8 +592,14 @@ case class Invoke(
       prepareArgsThenCallFunction
     }
 
+    val initializeEvValue = if (evValueIsAssignedOnlyOnce) {
+      "" // evValue is initialized elsewhere
+    } else {
+      s"$evValueDeclarationLhs = ${CodeGenerator.defaultValue(dataType)};"
+    }
+
     val code = obj.code + code"""
-      $initializeValue
+      $initializeEvValue
       $initializeIsNull
       $prepareTargetAndArgsThenCallFunction
      """
