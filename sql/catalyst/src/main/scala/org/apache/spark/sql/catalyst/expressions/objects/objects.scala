@@ -48,7 +48,7 @@ trait InvokeLike extends Expression with NonSQLExpression {
 
   def propagateNull: Boolean
 
-  protected lazy val needNullCheck: Boolean = propagateNull && arguments.exists(_.nullable)
+  protected lazy val needArgNullCheck: Boolean = propagateNull && arguments.exists(_.nullable)
 
   /**
    * Prepares codes for arguments.
@@ -65,7 +65,7 @@ trait InvokeLike extends Expression with NonSQLExpression {
    */
   def prepareArguments(ctx: CodegenContext): (String, String, ExprValue) = {
 
-    val resultIsNull = if (needNullCheck) {
+    val resultIsNull = if (needArgNullCheck) {
       val resultIsNull = ctx.addMutableState(CodeGenerator.JAVA_BOOLEAN, "resultIsNull")
       JavaCode.isNullGlobal(resultIsNull)
     } else {
@@ -76,7 +76,7 @@ trait InvokeLike extends Expression with NonSQLExpression {
       argValue
     }
 
-    val argCodes = if (needNullCheck) {
+    val argCodes = if (needArgNullCheck) {
       val reset = s"$resultIsNull = false;"
       val argCodes = arguments.zipWithIndex.map { case (e, i) =>
         val expr = e.genCode(ctx)
@@ -126,7 +126,7 @@ trait InvokeLike extends Expression with NonSQLExpression {
       input: InternalRow,
       dataType: DataType): Any = {
     val args = arguments.map(e => e.eval(input).asInstanceOf[Object])
-    if (needNullCheck && args.exists(_ == null)) {
+    if (needArgNullCheck && args.exists(_ == null)) {
       // return null if one of arguments is null
       null
     } else {
@@ -226,7 +226,7 @@ case class StaticInvoke(
     Utils.classForName(objectName)
   }
 
-  override def nullable: Boolean = needNullCheck || returnNullable
+  override def nullable: Boolean = needArgNullCheck || returnNullable
   override def children: Seq[Expression] = arguments
 
   lazy val argClasses = ScalaReflection.expressionJavaClasses(arguments)
@@ -310,7 +310,7 @@ case class Invoke(
 
   lazy val argClasses = ScalaReflection.expressionJavaClasses(arguments)
 
-  override def nullable: Boolean = targetObject.nullable || needNullCheck || returnNullable
+  override def nullable: Boolean = targetObject.nullable || needArgNullCheck || returnNullable
   override def children: Seq[Expression] = targetObject +: arguments
 
   private lazy val encodedFunctionName = TermName(functionName).encodedName.toString
@@ -342,61 +342,270 @@ case class Invoke(
   }
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    // This method is complex because there's a huge cross-product of cases to consider:
+    //
+    //   - Is the target object nullable?
+    //   - What is the method's return type?
+    //       - Primitive
+    //       - Boxed primitive
+    //       - Object
+    //   - Does the method declare checked exceptions?
+    //   - Should we call the method if some of its arguments are null?
+    //
+    // The code below is structured in a relatively bottom-up, inside-out fashion:
+    // it begins with function invocation and wraps that in successive layers
+    // of result casting, exception handling, result null-handling, argument
+    // null-handling, and target object null-handling.
+
     val javaType = CodeGenerator.javaType(dataType)
     val obj = targetObject.genCode(ctx)
 
     val (argCode, argString, resultIsNull) = prepareArguments(ctx)
 
-    val returnPrimitive = method.isDefined && method.get.getReturnType.isPrimitive
-    val needTryCatch = method.isDefined && method.get.getExceptionTypes.nonEmpty
+    // First, define some common variables / conditions which we'll use to guide the rest
+    // of the codegen:
 
-    def getFuncResult(resultVal: String, funcCall: String): String = if (needTryCatch) {
-      s"""
-        try {
-          $resultVal = $funcCall;
-        } catch (Exception e) {
-          org.apache.spark.unsafe.Platform.throwException(e);
-        }
-      """
-    } else {
-      s"$resultVal = $funcCall;"
+    // Determine whether the function returns an unboxed primitive.
+    // `functionReturnsPrimitive == false` means that either
+    //    (a) the method returns a non-primitive, or
+    //    (b) `targetObject` isn't an ObjectType and `method.isDefined == false`. This can
+    //         happen if `targetObject.dataType` is a StructType and Invoke is being used
+    //         to call methods on InternalRow.
+    //
+    // In the second case `functionReturnsPrimitive` may return a false-negative here,
+    // claiming that a method returns a boxed object when it actually returns a primitive.
+    // That's technically safe, but will lead to less compact generated code due because
+    // we will generate unnecessary variables and casts; fixing this is left to future work.
+    val functionReturnsPrimitive = method.isDefined && method.get.getReturnType.isPrimitive
+
+    // Determine whether `ev.value` is an unboxed primitive:
+    val evValueTypeIsPrimitive = CodeGenerator.isPrimitiveType(javaType)
+
+    // Determine whether we need to cast the function's return value before assigning it
+    // to `ev.value`:
+    val needToCastFunctionResult = {
+      if (functionReturnsPrimitive) {
+        // Don't need to explicitly cast primitive return values
+        // TODO: this assumes that casting is only used for erasure and not for changing
+        // primitives into other types (e.g casting a long to an integer). May want to
+        // add an assertion for this.
+        false
+      } else if (method.isDefined) {
+        // If the return type is non-primitive then we only need casts in case of type
+        // erasure. For example, if we're reading fields from a Tuple then the method
+        // return types might have been erased to `Object.
+        method.get.getReturnType != CodeGenerator.javaClass(dataType)
+      } else {
+        // `method` is undefined, so conservatively insert a possibly-unnecessary cast.
+        assert(!targetObject.dataType.isInstanceOf[ObjectType])
+        true
+      }
     }
 
-    val evaluate = if (returnPrimitive) {
-      getFuncResult(ev.value, s"${obj.value}.$encodedFunctionName($argString)")
-    } else {
-      val funcResult = ctx.freshName("funcResult")
-      // If the function can return null, we do an extra check to make sure our null bit is still
-      // set correctly.
-      val assignResult = if (!returnNullable) {
-        s"${ev.value} = (${CodeGenerator.boxedType(javaType)}) $funcResult;"
+    // Determine whether `ev.value` can be `final`, with initialization and assignment
+    // performed at the same time:
+    val evValueIsAssignedOnlyOnce = {
+      if (targetObject.nullable || needArgNullCheck) {
+        // We're performing null checks before we actually call the function, so we
+        // need to initialize `ev.null` and then assign to it separately (inside of
+        // an `if`):
+        false
+      } else if (returnNullable) {
+        if (needToCastFunctionResult && evValueTypeIsPrimitive) {
+          // The function returns a boxed primitive and we need to perform a
+          // null check, so we need to store the boxed form in a separate variable
+          // in order to perform the check.
+          false
+        } else {
+          // The function returns an object, so we can store it directly to `ev.value`
+          // and then check `ev.value` for null:
+          true
+        }
       } else {
+        // Invoke's result is non-nullable, so we can just directly assign it:
+        assert(!nullable)
+        true
+      }
+    }
+
+    // Initialization of `ev.isNull`
+    val initializeIsNull = if (nullable) {
+      // The following is an optimization to avoid the unnecessary second
+      // assignment in
+      //
+      //   boolean isNull = true;
+      //   isNull = false;
+      //   if (result == null) {
+      //      isNull = true;
+      //   }
+      //
+      // in cases where we only need to perform null checks due to function
+      // return value nullability: in that case, we can just initialize isNull
+      // to `true`. We still need to initialize it to `false` if we have target
+      // or argument null checks, though.
+
+      val startingIsNullValue = if (targetObject.nullable || needArgNullCheck) {
+        "true"
+      } else {
+        // Initialize `isNull` to `false` because it will be re-assigned
+        // to `true` only if the function result's null check returns `true.
+        assert(returnNullable)
+        "false"
+      }
+      s"boolean ${ev.isNull} = $startingIsNullValue;"
+    } else {
+      ev.isNull = FalseLiteral
+      ""  // no initialization code needed, since there's no variable
+    }
+
+    // Helper method the function and assign the result to the given lvalue.
+    def callFuncAndAssignResultTo(resultLVal: String) = {
+      val funcCall = s"${obj.value}.$encodedFunctionName($argString)"
+
+      val cast = if (needToCastFunctionResult) {
+        s"(${CodeGenerator.boxedType(javaType)}) "
+      } else {
+        ""
+      }
+
+      // If the method declares checked exceptions then we need to wrap the call
+      // in a try-catch block because we can't assume that those checked exceptions
+      // are declared in this code's enclosing method
+      val needTryCatch = method.isDefined && method.get.getExceptionTypes.nonEmpty
+      if (needTryCatch) {
         s"""
+          try {
+            $resultLVal = $cast$funcCall;
+          } catch (Exception e) {
+            org.apache.spark.unsafe.Platform.throwException(e);
+          }
+        """
+      } else {
+        s"$resultLVal = $cast$funcCall;"
+      }
+    }
+
+    val evValueDeclarationLhs = s"$javaType ${ev.value}"
+
+    // Call the function and perform null checking on the result (if necessary):
+    val canSkipReturnValueNullChecks = !returnNullable || functionReturnsPrimitive
+    val callFunctionAndPerformNullChecks = if (canSkipReturnValueNullChecks) {
+      // The function return value doesn't need null checks, but if we performed
+      // earlier null checks for the target or its arguments then we'd need to assign
+      // the result to the an already-declared `ev.value` variable.
+      if (targetObject.nullable || needArgNullCheck) {
+        assert(!evValueIsAssignedOnlyOnce)
+        callFuncAndAssignResultTo(s"${ev.value}")
+      } else {
+        assert(evValueIsAssignedOnlyOnce)
+        callFuncAndAssignResultTo(evValueDeclarationLhs)
+      }
+    } else {
+      // We must add a null check:
+      if (evValueTypeIsPrimitive) {
+        // The function returns a possibly-null boxed primitive, so we must temporarily store
+        // the boxed value in a different variable in order to perform the null check:
+        assert(!evValueIsAssignedOnlyOnce)
+        val funcResult = ctx.freshName("funcResult")
+        val funcResultDeclarationLhs = s"${CodeGenerator.boxedType(javaType)} $funcResult"
+        s"""
+          ${callFuncAndAssignResultTo(funcResultDeclarationLhs)}
           if ($funcResult != null) {
-            ${ev.value} = (${CodeGenerator.boxedType(javaType)}) $funcResult;
+            ${ev.value} = $funcResult;
           } else {
             ${ev.isNull} = true;
           }
         """
+      } else {
+        // The function returns a possibly-null object, so we can directly store it and then read
+        // it back in order to perform the null check:
+        val assignmentTarget = if (targetObject.nullable || needArgNullCheck) {
+          s"${ev.value}"
+        } else {
+          assert(evValueIsAssignedOnlyOnce)
+          evValueDeclarationLhs
+        }
+        s"""
+          ${callFuncAndAssignResultTo(assignmentTarget)}
+          if (${ev.value} == null) {
+            ${ev.isNull} = true;
+          }
+        """
       }
-      s"""
-        Object $funcResult = null;
-        ${getFuncResult(funcResult, s"${obj.value}.$encodedFunctionName($argString)")}
-        $assignResult
-      """
     }
 
-    val code = obj.code + code"""
-      boolean ${ev.isNull} = true;
-      $javaType ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
-      if (!${obj.isNull}) {
+    // Prepare the function's arguments and call the function
+    val prepareArgsThenCallFunction = if (needArgNullCheck) {
+      // propagateNull == true and at least one argument is nullable, so we must
+      // guard the function invocation with a null check.
+      s"""
         $argCode
         ${ev.isNull} = $resultIsNull;
         if (!${ev.isNull}) {
-          $evaluate
+          $callFunctionAndPerformNullChecks
         }
+      """
+    } else {
+      // propagateNull == false or all arguments are non-nullable (a function with
+      // zero arguments is a special case of this), so we don't need to perform
+      // argument null checks here. We might need to update `ev.isNull`, though:
+      // the value of `ev.isNull` should be `false` before we call
+      // callFunctionAndPerformNullChecks, but it would have been set to `true`
+      // if we performed target null checks (the "argument null checks case" is
+      // handled above).
+      if (targetObject.nullable) {
+        // `ev.isNull` was initialized to `true`, so we must flip it to `false` here:
+        s"""
+          $argCode
+          ${ev.isNull} = false;
+          $callFunctionAndPerformNullChecks
+        """
+      } else {
+        // Here, either
+        //
+        //   (a) Invoke isn't nullable, so we never need to assign to `ev.isNull`, or
+        //   (b) It _is_ nullable but _only_ because the function might return null
+        //       outputs for non-null inputs. In that case `ev.isNull` has already
+        //       been initialized to `false` so there's no need to assign it here.
+        assert(!nullable || (returnNullable && !targetObject.nullable && !needArgNullCheck))
+        s"""
+          $argCode
+          $callFunctionAndPerformNullChecks
+        """
       }
+    }
+
+    // Fetch the target, then prepare the arguments and call the function
+    val prepareTargetAndArgsThenCallFunction = if (targetObject.nullable) {
+      // The target object might be nullable, so we must guard the function
+      // invocation with a null check.
+      s"""
+        if (!${obj.isNull}) {
+          $prepareArgsThenCallFunction
+        }
+      """
+    } else {
+      // The target object is guaranteed to be non-null.
+      // One notable case where this branch is hit: SPARK-26730 changed ScalaReflection
+      // to wrap KnownNotNull() around the object passed to Invoke: if we're serializing
+      // a struct then higher-level code will skip the per-field Invoke calls if the
+      // struct itself is null, so when we _do_ call Invoke we're guaranteed that the
+      // object is non-null.
+      prepareArgsThenCallFunction
+    }
+
+    val initializeEvValue = if (evValueIsAssignedOnlyOnce) {
+      "" // evValue is initialized elsewhere
+    } else {
+      s"$evValueDeclarationLhs = ${CodeGenerator.defaultValue(dataType)};"
+    }
+
+    val code = obj.code + code"""
+      $initializeEvValue
+      $initializeIsNull
+      $prepareTargetAndArgsThenCallFunction
      """
+
     ev.copy(code = code)
   }
 
@@ -436,7 +645,7 @@ case class NewInstance(
     outerPointer: Option[() => AnyRef]) extends InvokeLike {
   private val className = cls.getName
 
-  override def nullable: Boolean = needNullCheck
+  override def nullable: Boolean = needArgNullCheck
 
   override def children: Seq[Expression] = arguments
 
