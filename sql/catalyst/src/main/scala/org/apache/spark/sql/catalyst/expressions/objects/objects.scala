@@ -400,10 +400,19 @@ case class Invoke(
       }
     }
 
+    // If the method declares checked exceptions then we need to wrap the call
+    // in a try-catch block because we can't assume that those checked exceptions
+    // are declared in this code's enclosing method
+    val needTryCatch = method.isDefined && method.get.getExceptionTypes.nonEmpty
+
     // Determine whether `ev.value` can be `final`, with initialization and assignment
     // performed at the same time:
     val evValueIsAssignedOnlyOnce = {
-      if (targetObject.nullable || needArgNullCheck) {
+      if (needTryCatch) {
+        // If we've wrapped the function call in a try-catch then the variable needs
+        // to be declared separately from the assignment.
+        false
+      } else if (targetObject.nullable || needArgNullCheck) {
         // We're performing null checks before we actually call the function, so we
         // need to initialize `ev.null` and then assign to it separately (inside of
         // an `if`):
@@ -466,10 +475,6 @@ case class Invoke(
         ""
       }
 
-      // If the method declares checked exceptions then we need to wrap the call
-      // in a try-catch block because we can't assume that those checked exceptions
-      // are declared in this code's enclosing method
-      val needTryCatch = method.isDefined && method.get.getExceptionTypes.nonEmpty
       if (needTryCatch) {
         s"""
           try {
