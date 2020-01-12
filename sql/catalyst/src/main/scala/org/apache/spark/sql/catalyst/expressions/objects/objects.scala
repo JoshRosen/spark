@@ -476,6 +476,7 @@ case class Invoke(
       }
 
       if (needTryCatch) {
+        assert(!evValueIsAssignedOnlyOnce)
         s"""
           try {
             $resultLVal = $cast$funcCall;
@@ -493,15 +494,11 @@ case class Invoke(
     // Call the function and perform null checking on the result (if necessary):
     val canSkipReturnValueNullChecks = !returnNullable || functionReturnsPrimitive
     val callFunctionAndPerformNullChecks = if (canSkipReturnValueNullChecks) {
-      // The function return value doesn't need null checks, but if we performed
-      // earlier null checks for the target or its arguments then we'd need to assign
-      // the result to the an already-declared `ev.value` variable.
-      if (targetObject.nullable || needArgNullCheck) {
-        assert(!evValueIsAssignedOnlyOnce)
-        callFuncAndAssignResultTo(s"${ev.value}")
-      } else {
-        assert(evValueIsAssignedOnlyOnce)
+      // No function null checks, so simply compute and store the result.
+      if (evValueIsAssignedOnlyOnce) {
         callFuncAndAssignResultTo(evValueDeclarationLhs)
+      } else {
+        callFuncAndAssignResultTo(s"${ev.value}")
       }
     } else {
       // We must add a null check:
@@ -522,11 +519,10 @@ case class Invoke(
       } else {
         // The function returns a possibly-null object, so we can directly store it and then read
         // it back in order to perform the null check:
-        val assignmentTarget = if (targetObject.nullable || needArgNullCheck) {
-          s"${ev.value}"
-        } else {
-          assert(evValueIsAssignedOnlyOnce)
+        val assignmentTarget = if (evValueIsAssignedOnlyOnce) {
           evValueDeclarationLhs
+        } else {
+          s"${ev.value}"
         }
         s"""
           ${callFuncAndAssignResultTo(assignmentTarget)}
