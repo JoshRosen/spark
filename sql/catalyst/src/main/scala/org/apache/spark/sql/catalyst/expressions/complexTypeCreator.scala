@@ -365,14 +365,21 @@ case class CreateNamedStruct(children: Seq[Expression]) extends Expression {
     val values = ctx.freshName("values")
     val valCodes = valExprs.zipWithIndex.map { case (e, i) =>
       val eval = e.genCode(ctx)
-      s"""
-         |${eval.code}
-         |if (${eval.isNull}) {
-         |  $values[$i] = null;
-         |} else {
-         |  $values[$i] = ${eval.value};
-         |}
-       """.stripMargin
+      if (eval.isNull == FalseLiteral) {
+        s"""
+           |${eval.code}
+           |$values[$i] = ${eval.value};
+         """.stripMargin
+      } else {
+        s"""
+           |${eval.code}
+           |if (${eval.isNull}) {
+           |  $values[$i] = null;
+           |} else {
+           |  $values[$i] = ${eval.value};
+           |}
+         """.stripMargin
+      }
     }
     val valuesCode = ctx.splitExpressionsWithCurrentInputs(
       expressions = valCodes,
