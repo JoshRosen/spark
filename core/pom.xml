@@ -71,11 +71,6 @@
       <version>${hadoop.version}</version>
     </dependency>
     <dependency>
-      <groupId>org.apache.hadoop</groupId>
-      <artifactId>${hadoop-client-runtime.artifact}</artifactId>
-      <version>${hadoop.version}</version>
-    </dependency>
-    <dependency>
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-launcher_${scala.binary.version}</artifactId>
       <version>${project.version}</version>
@@ -599,6 +594,26 @@
   </build>
 
   <profiles>
+    <profile>
+      <id>hadoop-2.7</id>
+    </profile>
+    <profile>
+      <id>hadoop-3.2</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
+      <!--
+        Only declare for Hadoop 3.2 profile. Otherwise maven-enforcer's "duplicate
+        POM dependencies" check will fail.
+      -->
+      <dependencies>
+        <dependency>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>${hadoop-client-runtime.artifact}</artifactId>
+          <version>${hadoop.version}</version>
+        </dependency>
+      </dependencies>
+    </profile>
     <profile>
       <id>Windows</id>
       <activation>
