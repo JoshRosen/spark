@@ -764,7 +764,10 @@ private[spark] object JsonProtocolSuite extends Assertions {
         assertEquals(e1.reason, e2.reason)
         assertEquals(e1.taskInfo, e2.taskInfo)
         assertEquals(e1.taskExecutorMetrics, e2.taskExecutorMetrics)
-        assertEquals(e1.taskMetrics, e2.taskMetrics)
+        assertEquals(
+          Option(e1.taskMetrics).getOrElse(TaskMetrics.empty),
+          Option(e2.taskMetrics).getOrElse(TaskMetrics.empty)
+        )
       case (e1: SparkListenerJobStart, e2: SparkListenerJobStart) =>
         assert(e1.jobId === e2.jobId)
         assert(e1.properties === e2.properties)
@@ -807,10 +810,22 @@ private[spark] object JsonProtocolSuite extends Assertions {
         assert(e1.stageId === e2.stageId)
         assert(e1.stageAttemptId === e2.stageAttemptId)
         assertEquals(e1.executorMetrics, e2.executorMetrics)
+      case (e1: SparkListenerBlockUpdated, e2: SparkListenerBlockUpdated) =>
+        assertEquals(e1.blockUpdatedInfo, e2.blockUpdatedInfo)
+      case (e1: SparkListenerResourceProfileAdded, e2: SparkListenerResourceProfileAdded) =>
+        assertEquals(e1.resourceProfile, e2.resourceProfile)
       case (e1, e2) =>
         assert(e1 === e2)
       case _ => fail("Events don't match in types!")
     }
+  }
+
+  private def assertEquals(info1: BlockUpdatedInfo, info2: BlockUpdatedInfo): Unit = {
+    assert(info1.blockManagerId === info2.blockManagerId)
+    assert(info1.blockId === info2.blockId)
+    assert(info1.storageLevel === info2.storageLevel)
+    assert(info1.memSize === info2.memSize)
+    assert(info1.diskSize === info2.diskSize)
   }
 
   private def assertEquals(info1: StageInfo, info2: StageInfo): Unit = {
@@ -946,7 +961,9 @@ private[spark] object JsonProtocolSuite extends Assertions {
     details1.zip(details2).foreach {
       case ((key1, values1: Seq[(String, String)]), (key2, values2: Seq[(String, String)])) =>
         assert(key1 === key2)
-        values1.zip(values2).foreach { case (v1, v2) => assert(v1 === v2) }
+        withClue(key1) {
+          values1.zip(values2).foreach { case (v1, v2) => assert(v1 === v2) }
+        }
     }
   }
 
@@ -1022,6 +1039,9 @@ private[spark] object JsonProtocolSuite extends Assertions {
   }
 
   private def assertEquals(rp1: ResourceProfile, rp2: ResourceProfile): Unit = {
+    assert(rp1.id === rp2.id)
+    assert(rp1.taskResources === rp2.taskResources)
+    assert(rp2.executorResources === rp2.executorResources)
     assert(rp1 === rp2)
   }
 
