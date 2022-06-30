@@ -36,6 +36,7 @@ import org.apache.spark.executor._
 import org.apache.spark.metrics.ExecutorMetricType
 import org.apache.spark.rdd.{DeterministicLevel, RDDOperationScope}
 import org.apache.spark.resource._
+import org.apache.spark.resource.ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID
 import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.cluster.ExecutorInfo
 import org.apache.spark.shuffle.MetadataFetchFailedException
@@ -145,9 +146,14 @@ class JsonProtocolSuite extends SparkFunSuite {
           321L, 654L, 765L, 256912L, 123456L, 123456L, 61728L,
           30364L, 15182L, 10L, 90L, 2L, 20L, 80001L)))
     val rprofBuilder = new ResourceProfileBuilder()
-    val taskReq = new TaskResourceRequests().cpus(1).resource("gpu", 1)
-    val execReq =
-      new ExecutorResourceRequests().cores(2).resource("gpu", 2, "myscript")
+    val taskReq = new TaskResourceRequests()
+      .cpus(1)
+      .resource("gpu", 1)
+      .resource("fgpa", 0.5)
+    val execReq: ExecutorResourceRequests = new ExecutorResourceRequests()
+      .cores(2)
+      .resource("gpu", 2, "myscript")
+      .resource("myCustomResource", amount = Int.MaxValue + 1L, discoveryScript = "myscript2")
     rprofBuilder.require(taskReq).require(execReq)
     val resourceProfile = rprofBuilder.build
     resourceProfile.setResourceProfileId(21)
@@ -214,6 +220,7 @@ class JsonProtocolSuite extends SparkFunSuite {
     testStorageLevel(StorageLevel.MEMORY_AND_DISK_2)
     testStorageLevel(StorageLevel.MEMORY_AND_DISK_SER)
     testStorageLevel(StorageLevel.MEMORY_AND_DISK_SER_2)
+    testStorageLevel(StorageLevel.OFF_HEAP)
 
     // JobResult
     val exception = new Exception("Out of Memory! Please restock film.")
@@ -296,6 +303,8 @@ class JsonProtocolSuite extends SparkFunSuite {
     val newJson = toJsonString(JsonProtocol.taskMetricsToJson(metrics, _))
     val oldJson = newJson.removeField("Input Metrics")
     val newMetrics = JsonProtocol.taskMetricsFromJson(oldJson)
+    assert(newMetrics.inputMetrics.recordsRead == 0)
+    assert(newMetrics.inputMetrics.bytesRead == 0)
   }
 
   test("Input/Output records backwards compatibility") {
@@ -313,14 +322,17 @@ class JsonProtocolSuite extends SparkFunSuite {
 
   test("Shuffle Read/Write records backwards compatibility") {
     // records read were added after 1.2
+    // "Remote Bytes Read To Disk" was added in 2.3.0
     val metrics = makeTaskMetrics(1L, 2L, 3L, 4L, 5, 6,
       hasHadoopInput = false, hasOutput = false, hasRecords = false)
     val newJson = toJsonString(JsonProtocol.taskMetricsToJson(metrics, _))
     val oldJson = newJson
       .removeField("Total Records Read")
       .removeField("Shuffle Records Written")
+      .removeField("Remote Bytes Read To Disk")
     val newMetrics = JsonProtocol.taskMetricsFromJson(oldJson)
     assert(newMetrics.shuffleReadMetrics.recordsRead == 0)
+    assert(newMetrics.shuffleReadMetrics.remoteBytesReadToDisk == 0)
     assert(newMetrics.shuffleWriteMetrics.recordsWritten == 0)
   }
 
@@ -330,6 +342,41 @@ class JsonProtocolSuite extends SparkFunSuite {
     val newJson = toJsonString(JsonProtocol.taskMetricsToJson(metrics, _))
     val oldJson = newJson.removeField("Output Metrics")
     val newMetrics = JsonProtocol.taskMetricsFromJson(oldJson)
+    assert(newMetrics.outputMetrics.recordsWritten == 0)
+    assert(newMetrics.outputMetrics.bytesWritten == 0)
+  }
+
+  test("TaskMetrics backward compatibility") {
+    // "Executor Deserialize CPU Time" and "Executor CPU Time" were introduced in Spark 2.1.0
+    // "Peak Execution Memory" was introduced in Spark 3.0.0
+    val metrics = makeTaskMetrics(1L, 2L, 3L, 4L, 5, 6, hasHadoopInput = false, hasOutput = true)
+    metrics.setExecutorDeserializeCpuTime(100L)
+    metrics.setExecutorCpuTime(100L)
+    metrics.setPeakExecutionMemory(100L)
+    val newJson = toJsonString(JsonProtocol.taskMetricsToJson(metrics, _))
+    val oldJson = newJson
+      .removeField("Executor Deserialize CPU Time")
+      .removeField("Executor CPU Time")
+      .removeField("Peak Execution Memory")
+    val newMetrics = JsonProtocol.taskMetricsFromJson(oldJson)
+    assert(newMetrics.executorDeserializeCpuTime == 0)
+    assert(newMetrics.executorCpuTime == 0)
+    assert(newMetrics.peakExecutionMemory == 0)
+  }
+
+  test("StorageLevel backward compatibility") {
+    // "Use Off Heap" was added in Spark 3.4.0
+    val level = StorageLevel(
+      useDisk = false,
+      useMemory = true,
+      useOffHeap = true,
+      deserialized = false,
+      replication = 1
+    )
+    val newJson = toJsonString(JsonProtocol.storageLevelToJson(level, _))
+    val oldJson = newJson.removeField("Use Off Heap")
+    val newLevel = JsonProtocol.storageLevelFromJson(oldJson)
+    assert(newLevel.useOffHeap === false)
   }
 
   test("BlockManager events backward compatibility") {
@@ -439,17 +486,22 @@ class JsonProtocolSuite extends SparkFunSuite {
     assertEquals(expectedJobEnd, JsonProtocol.jobEndFromJson(oldEndEvent))
   }
 
-  test("RDDInfo backward compatibility (scope, parent IDs, callsite)") {
+  test("RDDInfo backward compatibility") {
     // "Scope" and "Parent IDs" were introduced in Spark 1.4.0
     // "Callsite" was introduced in Spark 1.6.0
-    val rddInfo = new RDDInfo(1, "one", 100, StorageLevel.NONE, false, Seq(1, 6, 8),
-      "callsite", Some(new RDDOperationScope("fable")))
+    // "Barrier" was introduced in Spark 3.0.0
+    // "DeterministicLevel" was introduced in Spark 3.2.0
+    val rddInfo = new RDDInfo(1, "one", 100, StorageLevel.NONE, true, Seq(1, 6, 8),
+      "callsite", Some(new RDDOperationScope("fable")), DeterministicLevel.INDETERMINATE)
     val oldRddInfoJson = toJsonString(JsonProtocol.rddInfoToJson(rddInfo, _))
       .removeField("Parent IDs")
       .removeField("Scope")
       .removeField("Callsite")
+      .removeField("Barrier")
+      .removeField("DeterministicLevel")
     val expectedRddInfo = new RDDInfo(
-      1, "one", 100, StorageLevel.NONE, false, Seq.empty, "", scope = None)
+      1, "one", 100, StorageLevel.NONE, false, Seq.empty, "", scope = None,
+      outputDeterministicLevel = DeterministicLevel.INDETERMINATE)
     assertEquals(expectedRddInfo, JsonProtocol.rddInfoFromJson(oldRddInfoJson))
   }
 
@@ -517,6 +569,24 @@ class JsonProtocolSuite extends SparkFunSuite {
       exceptionFailure.accumUpdates, oldExceptionFailure.accumUpdates, (x, y) => x == y)
   }
 
+  test("TaskKilled backward compatibility") {
+    // The "Kill Reason" field was added in Spark 2.2.0
+    // The "Accumulator Updates" field was added in Spark 2.4.0
+    val tm = makeTaskMetrics(1L, 2L, 3L, 4L, 5, 6, hasHadoopInput = true, hasOutput = true)
+    val accumUpdates = tm.accumulators().map(AccumulatorSuite.makeInfo)
+    val taskKilled = TaskKilled(reason = "test", accumUpdates)
+    val taskKilledJson = toJsonString(JsonProtocol.taskEndReasonToJson(taskKilled, _))
+    val oldExceptionFailureJson =
+      taskKilledJson
+        .removeField("Kill Reason")
+        .removeField("Accumulator Updates")
+    val oldTaskKilled =
+      JsonProtocol.taskEndReasonFromJson(oldExceptionFailureJson).asInstanceOf[TaskKilled]
+    assert(oldTaskKilled.reason === "unknown reason")
+    assert(oldTaskKilled.accums.isEmpty)
+    assert(oldTaskKilled.accumUpdates.isEmpty)
+  }
+
   test("ExecutorMetricsUpdate backward compatibility: executor metrics update") {
     // executorMetricsUpdate was added in 2.4.0.
     val executorMetricsUpdate = makeExecutorMetricsUpdate("1", true, true)
@@ -539,6 +609,83 @@ class JsonProtocolSuite extends SparkFunSuite {
       78L, 89L, 90L, 123L, 456L, 0L, 40L, 20L, 20L, 10L, 20L, 10L, 301L))
     assertEquals(expectedExecutorMetrics,
       JsonProtocol.executorMetricsFromJson(oldExecutorMetricsJson))
+  }
+
+  test("EnvironmentUpdate backward compatibility: handle missing metrics properties") {
+    // The "Metrics Properties" field was added in Spark 3.4.0:
+    val expectedEvent: SparkListenerEnvironmentUpdate = {
+      val e = JsonProtocol.environmentUpdateFromJson(environmentUpdateJsonString)
+      e.copy(environmentDetails =
+        e.environmentDetails + ("Metrics Properties" -> Seq.empty[(String, String)]))
+    }
+    val oldEnvironmentUpdateJson = environmentUpdateJsonString
+      .removeField("Metrics Properties")
+    assertEquals(expectedEvent, JsonProtocol.environmentUpdateFromJson(oldEnvironmentUpdateJson))
+  }
+
+  test("ExecutorInfo backward compatibility") {
+    // The "Attributes" and "Resources" fields were added in Spark 3.0.0
+    // The "Resource Profile Id", "Registration Time", and "Request Time"
+    // fields were added in Spark 3.4.0
+    val resourcesInfo = Map(ResourceUtils.GPU ->
+      new ResourceInformation(ResourceUtils.GPU, Array("0", "1"))).toMap
+    val attributes = Map("ContainerId" -> "ct1", "User" -> "spark").toMap
+    val executorInfo =
+      new ExecutorInfo(
+        "Hostee.awesome.com",
+        11,
+        logUrlMap = Map.empty[String, String].toMap,
+        attributes = attributes,
+        resourcesInfo = resourcesInfo,
+        resourceProfileId = 123,
+        registrationTime = Some(2L),
+        requestTime = Some(1L))
+    val oldExecutorInfoJson = toJsonString(JsonProtocol.executorInfoToJson(executorInfo, _))
+      .removeField("Attributes")
+      .removeField("Resources")
+      .removeField("Resource Profile Id")
+      .removeField("Registration Time")
+      .removeField("Request Time")
+    val oldEvent = JsonProtocol.executorInfoFromJson(oldExecutorInfoJson)
+    assert(oldEvent.attributes.isEmpty)
+    assert(oldEvent.resourcesInfo.isEmpty)
+    assert(oldEvent.resourceProfileId == DEFAULT_RESOURCE_PROFILE_ID)
+    assert(oldEvent.registrationTime.isEmpty)
+    assert(oldEvent.requestTime.isEmpty)
+  }
+
+  test("TaskInfo backward compatibility: handle missing partition ID field") {
+    // The "Partition ID" field was added in Spark 3.3.0:
+    val newJson =
+      """
+        |{
+        |  "Task ID": 222,
+        |  "Index": 333,
+        |  "Attempt": 1,
+        |  "Partition ID": 333,
+        |  "Launch Time": 444,
+        |  "Executor ID": "executor",
+        |  "Host": "your kind sir",
+        |  "Locality": "NODE_LOCAL",
+        |  "Speculative": false,
+        |  "Getting Result Time": 0,
+        |  "Finish Time": 0,
+        |  "Failed": false,
+        |  "Killed": false,
+        |  "Accumulables": [
+        |    {
+        |      "ID": 1,
+        |      "Name": "Accumulable1",
+        |      "Update": "delta1",
+        |      "Value": "val1",
+        |      "Internal": false,
+        |      "Count Failed Values": false
+        |    }
+        |  ]
+        |}
+    """.stripMargin
+    val oldJson = newJson.removeField("Partition ID")
+    assert(JsonProtocol.taskInfoFromJson(oldJson).partitionId === -1)
   }
 
   test("AccumulableInfo value de/serialization") {
@@ -1293,6 +1440,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |        "Storage Level": {
       |          "Use Disk": true,
       |          "Use Memory": true,
+      |          "Use Off Heap": false,
       |          "Deserialized": true,
       |          "Replication": 1
       |        },
@@ -1541,6 +1689,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |          "Storage Level": {
       |            "Use Disk": true,
       |            "Use Memory": true,
+      |            "Use Off Heap": false,
       |            "Deserialized": false,
       |            "Replication": 2
       |          },
@@ -1667,6 +1816,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |          "Storage Level": {
       |            "Use Disk": true,
       |            "Use Memory": true,
+      |            "Use Off Heap": false,
       |            "Deserialized": false,
       |            "Replication": 2
       |          },
@@ -1793,6 +1943,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |          "Storage Level": {
       |            "Use Disk": true,
       |            "Use Memory": true,
+      |            "Use Off Heap": false,
       |            "Deserialized": false,
       |            "Replication": 2
       |          },
@@ -1826,6 +1977,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |          "Storage Level": {
       |            "Use Disk": true,
       |            "Use Memory": true,
+      |            "Use Off Heap": false,
       |            "Deserialized": true,
       |            "Replication": 1
       |          },
@@ -1873,6 +2025,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |          "Storage Level": {
       |            "Use Disk": true,
       |            "Use Memory": true,
+      |            "Use Off Heap": false,
       |            "Deserialized": true,
       |            "Replication": 1
       |          },
@@ -1891,6 +2044,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |          "Storage Level": {
       |            "Use Disk": true,
       |            "Use Memory": true,
+      |            "Use Off Heap": false,
       |            "Deserialized": true,
       |            "Replication": 1
       |          },
@@ -1938,6 +2092,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |          "Storage Level": {
       |            "Use Disk": true,
       |            "Use Memory": true,
+      |            "Use Off Heap": false,
       |            "Deserialized": true,
       |            "Replication": 1
       |          },
@@ -1956,6 +2111,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |          "Storage Level": {
       |            "Use Disk": true,
       |            "Use Memory": true,
+      |            "Use Off Heap": false,
       |            "Deserialized": true,
       |            "Replication": 1
       |          },
@@ -1974,6 +2130,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |          "Storage Level": {
       |            "Use Disk": true,
       |            "Use Memory": true,
+      |            "Use Off Heap": false,
       |            "Deserialized": true,
       |            "Replication": 1
       |          },
@@ -2021,6 +2178,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |          "Storage Level": {
       |            "Use Disk": true,
       |            "Use Memory": true,
+      |            "Use Off Heap": false,
       |            "Deserialized": true,
       |            "Replication": 1
       |          },
@@ -2039,6 +2197,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |          "Storage Level": {
       |            "Use Disk": true,
       |            "Use Memory": true,
+      |            "Use Off Heap": false,
       |            "Deserialized": true,
       |            "Replication": 1
       |          },
@@ -2057,6 +2216,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |          "Storage Level": {
       |            "Use Disk": true,
       |            "Use Memory": true,
+      |            "Use Off Heap": false,
       |            "Deserialized": true,
       |            "Replication": 1
       |          },
@@ -2075,6 +2235,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |          "Storage Level": {
       |            "Use Disk": true,
       |            "Use Memory": true,
+      |            "Use Off Heap": false,
       |            "Deserialized": true,
       |            "Replication": 1
       |          },
@@ -2406,6 +2567,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |                "Storage Level": {
       |                  "Use Disk": true,
       |                  "Use Memory": true,
+      |                  "Use Off Heap": false,
       |                  "Deserialized": false,
       |                  "Replication": 2
       |                },
@@ -2604,6 +2766,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |    "Storage Level": {
       |      "Use Disk": false,
       |      "Use Memory": true,
+      |      "Use Off Heap": false,
       |      "Deserialized": true,
       |      "Replication": 1
       |    },
@@ -2693,6 +2856,12 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |      "Discovery Script":"",
       |      "Vendor":""
       |    },
+      |    "myCustomResource":{
+      |      "Resource Name":"myCustomResource",
+      |      "Amount": 2147483648,
+      |      "Discovery Script": "myscript2",
+      |      "Vendor" : ""
+      |    },
       |    "gpu":{
       |      "Resource Name":"gpu",
       |      "Amount":2,
@@ -2708,6 +2877,10 @@ private[spark] object JsonProtocolSuite extends Assertions {
       |    "gpu":{
       |      "Resource Name":"gpu",
       |      "Amount":1.0
+      |    },
+      |    "fgpa":{
+      |      "Resource Name":"fgpa",
+      |      "Amount":0.5
       |    }
       |  }
       |}

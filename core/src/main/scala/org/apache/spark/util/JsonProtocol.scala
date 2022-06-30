@@ -675,6 +675,7 @@ private[spark] object JsonProtocol {
     g.writeStartObject()
     g.writeBooleanField("Use Disk", storageLevel.useDisk)
     g.writeBooleanField("Use Memory", storageLevel.useMemory)
+    g.writeBooleanField("Use Off Heap", storageLevel.useOffHeap)
     g.writeBooleanField("Deserialized", storageLevel.deserialized)
     g.writeNumberField("Replication", storageLevel.replication)
     g.writeEndObject()
@@ -945,7 +946,7 @@ private[spark] object JsonProtocol {
 
   def executorResourceRequestFromJson(json: JsonNode): ExecutorResourceRequest = {
     val rName = json.get("Resource Name").textValue
-    val amount = json.get("Amount").intValue
+    val amount = json.get("Amount").longValue
     val discoveryScript = json.get("Discovery Script").textValue
     val vendor = json.get("Vendor").textValue
     new ExecutorResourceRequest(rName, amount, discoveryScript, vendor)
@@ -953,7 +954,7 @@ private[spark] object JsonProtocol {
 
   def taskResourceRequestFromJson(json: JsonNode): TaskResourceRequest = {
     val rName = json.get("Resource Name").textValue
-    val amount = json.get("Amount").intValue
+    val amount = json.get("Amount").doubleValue
     new TaskResourceRequest(rName, amount)
   }
 
@@ -975,6 +976,7 @@ private[spark] object JsonProtocol {
     // For compatible with previous event logs
     val hadoopProperties = jsonOption(json.get("Hadoop Properties")).map(mapFromJson(_).toSeq)
       .getOrElse(Seq.empty)
+    // The "Metrics Properties" field was added in Spark 3.4.0:
     val metricsProperties = jsonOption(json.get("Metrics Properties")).map(mapFromJson(_).toSeq)
       .getOrElse(Seq.empty)
     val environmentDetails = Map[String, Seq[(String, String)]](
@@ -1116,6 +1118,7 @@ private[spark] object JsonProtocol {
     val taskId = json.get("Task ID").longValue
     val index = json.get("Index").intValue
     val attempt = jsonOption(json.get("Attempt")).map(_.intValue).getOrElse(1)
+    // The "Partition ID" field was added in Spark 3.3.0:
     val partitionId = jsonOption(json.get("Partition ID")).map(_.intValue).getOrElse(-1)
     val launchTime = json.get("Launch Time").longValue
     val executorId = weakIntern(json.get("Executor ID").textValue)
@@ -1188,11 +1191,14 @@ private[spark] object JsonProtocol {
       return metrics
     }
     metrics.setExecutorDeserializeTime(json.get("Executor Deserialize Time").longValue)
+    // The "Executor Deserialize CPU Time" field was added in Spark 2.1.0:
     metrics.setExecutorDeserializeCpuTime(
       jsonOption(json.get("Executor Deserialize CPU Time")).map(_.longValue).getOrElse(0))
     metrics.setExecutorRunTime(json.get("Executor Run Time").longValue)
+    // The "Executor CPU Time" field was added in Spark 2.1.0:
     metrics.setExecutorCpuTime(
       jsonOption(json.get("Executor CPU Time")).map(_.longValue).getOrElse(0))
+    // The "Peak Execution Memory" field was added in Spark 3.0.0:
     metrics.setPeakExecutionMemory(
       jsonOption(json.get("Peak Execution Memory")).map(_.longValue).getOrElse(0))
     metrics.setResultSize(json.get("Result Size").longValue)
@@ -1302,8 +1308,10 @@ private[spark] object JsonProtocol {
         ExceptionFailure(className, description, stackTrace, fullStackTrace, None, accumUpdates)
       case `taskResultLost` => TaskResultLost
       case `taskKilled` =>
+      // The "Kill Reason" field was added in Spark 2.2.0:
         val killReason = jsonOption(json.get("Kill Reason"))
           .map(_.asText).getOrElse("unknown reason")
+        // The "Accumulator Updates" field was added in Spark 2.4.0:
         val accumUpdates = jsonOption(json.get("Accumulator Updates"))
           .map(_.elements.asScala.map(accumulableInfoFromJson).toArray.toSeq)
           .getOrElse(Seq[AccumulableInfo]())
@@ -1366,6 +1374,7 @@ private[spark] object JsonProtocol {
       .map { l => l.elements.asScala.map(_.intValue).toArray.toSeq }
       .getOrElse(Seq.empty)
     val storageLevel = storageLevelFromJson(json.get("Storage Level"))
+    // The "Barrier" field was added in Spark 3.0.0:
     val isBarrier = jsonOption(json.get("Barrier")).map(_.booleanValue).getOrElse(false)
     val numPartitions = json.get("Number of Partitions").intValue
     val numCachedPartitions = json.get("Number of Cached Partitions").intValue
@@ -1387,9 +1396,19 @@ private[spark] object JsonProtocol {
   def storageLevelFromJson(json: JsonNode): StorageLevel = {
     val useDisk = json.get("Use Disk").booleanValue
     val useMemory = json.get("Use Memory").booleanValue
+    // The "Use Off Heap" field was added in Spark 3.4.0
+    val useOffHeap = jsonOption(json.get("Use Off Heap")) match {
+      case Some(value) => value.booleanValue
+      case None => false
+    }
     val deserialized = json.get("Deserialized").booleanValue
     val replication = json.get("Replication").intValue
-    StorageLevel(useDisk, useMemory, deserialized, replication)
+    StorageLevel(
+      useDisk = useDisk,
+      useMemory = useMemory,
+      useOffHeap = useOffHeap,
+      deserialized = deserialized,
+      replication = replication)
   }
 
   def blockStatusFromJson(json: JsonNode): BlockStatus = {
@@ -1403,21 +1422,26 @@ private[spark] object JsonProtocol {
     val executorHost = json.get("Host").textValue
     val totalCores = json.get("Total Cores").intValue
     val logUrls = mapFromJson(json.get("Log Urls")).toMap
+    // The "Attributes" field was added in Spark 3.0.0:
     val attributes = jsonOption(json.get("Attributes")) match {
       case Some(attr) => mapFromJson(attr).toMap
       case None => Map.empty[String, String]
     }
+    // The "Resources" field was added in Spark 3.0.0:
     val resources = jsonOption(json.get("Resources")) match {
       case Some(resources) => resourcesMapFromJson(resources).toMap
       case None => Map.empty[String, ResourceInformation]
     }
+    // The "Resource Profile Id" field was added in Spark 3.4.0
     val resourceProfileId = jsonOption(json.get("Resource Profile Id")) match {
       case Some(id) => id.intValue
       case None => ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID
     }
+    // The "Registration Time" field was added in Spark 3.4.0
     val registrationTs = jsonOption(json.get("Registration Time")) map { ts =>
       ts.longValue
     }
+    // The "Request Time" field was added in Spark 3.4.0
     val requestTs = jsonOption(json.get("Request Time")) map { ts =>
       ts.longValue
     }
