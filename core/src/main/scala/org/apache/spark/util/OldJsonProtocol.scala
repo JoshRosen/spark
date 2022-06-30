@@ -512,6 +512,7 @@ private[spark] object OldJsonProtocol {
   def storageLevelToJson(storageLevel: StorageLevel): JValue = {
     ("Use Disk" -> storageLevel.useDisk) ~
       ("Use Memory" -> storageLevel.useMemory) ~
+      ("Use Off Heap" -> storageLevel.useOffHeap) ~
       ("Deserialized" -> storageLevel.deserialized) ~
       ("Replication" -> storageLevel.replication)
   }
@@ -582,6 +583,9 @@ private[spark] object OldJsonProtocol {
    * ------------------------------- */
 
   def mapToJson(m: Map[String, String]): JValue = {
+    // Ensure that old code's ordering is deterministic / matches new code's ordering:
+    //     val jsonFields = m.map { case (k, v) => JField(k, JString(v)) }
+    //    JObject(jsonFields.toList)
     val jsonFields = m.toList.map { case (k, v) => JField(k, JString(v)) }
     JObject(jsonFields)
   }
@@ -750,7 +754,7 @@ private[spark] object OldJsonProtocol {
 
   def executorResourceRequestFromJson(json: JValue): ExecutorResourceRequest = {
     val rName = (json \ "Resource Name").extract[String]
-    val amount = (json \ "Amount").extract[Int]
+    val amount = (json \ "Amount").extract[Long]
     val discoveryScript = (json \ "Discovery Script").extract[String]
     val vendor = (json \ "Vendor").extract[String]
     new ExecutorResourceRequest(rName, amount, discoveryScript, vendor)
@@ -758,7 +762,7 @@ private[spark] object OldJsonProtocol {
 
   def taskResourceRequestFromJson(json: JValue): TaskResourceRequest = {
     val rName = (json \ "Resource Name").extract[String]
-    val amount = (json \ "Amount").extract[Int]
+    val amount = (json \ "Amount").extract[Double]
     new TaskResourceRequest(rName, amount)
   }
 
@@ -1202,9 +1206,19 @@ private[spark] object OldJsonProtocol {
   def storageLevelFromJson(json: JValue): StorageLevel = {
     val useDisk = (json \ "Use Disk").extract[Boolean]
     val useMemory = (json \ "Use Memory").extract[Boolean]
+    // The "Use Off Heap" field was added in Spark 3.4.0
+    val useOffHeap = jsonOption(json \ "Use Off Heap") match {
+      case Some(value) => value.extract[Boolean]
+      case None => false
+    }
     val deserialized = (json \ "Deserialized").extract[Boolean]
     val replication = (json \ "Replication").extract[Int]
-    StorageLevel(useDisk, useMemory, deserialized, replication)
+    StorageLevel(
+      useDisk = useDisk,
+      useMemory = useMemory,
+      useOffHeap = useOffHeap,
+      deserialized = deserialized,
+      replication = replication)
   }
 
   def blockStatusFromJson(json: JValue): BlockStatus = {

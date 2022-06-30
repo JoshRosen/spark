@@ -22,7 +22,6 @@ import java.util.Properties
 import scala.collection.JavaConverters._
 
 import org.json4s.jackson.JsonMethods.{compact, render}
-import org.json4s.jackson.JsonMethods
 import org.scalacheck.{Arbitrary, Gen}
 import org.scalatestplus.scalacheck.ScalaCheckDrivenPropertyChecks
 
@@ -55,7 +54,8 @@ class JsonProtocolPropertyTests extends SparkFunSuite with ScalaCheckDrivenPrope
     StorageLevel.DISK_ONLY,
     StorageLevel.MEMORY_ONLY,
     StorageLevel.MEMORY_ONLY_SER,
-    StorageLevel.MEMORY_AND_DISK_SER_2
+    StorageLevel.MEMORY_AND_DISK_SER_2,
+    StorageLevel.OFF_HEAP
   ))
 
   val rddOperationScopeGen: Gen[RDDOperationScope] = for {
@@ -628,7 +628,7 @@ class JsonProtocolPropertyTests extends SparkFunSuite with ScalaCheckDrivenPrope
 
   val executorResourceRequestGen = for {
     resourceName <- arbitrary[String]
-    amount <- arbitrary[Int] // TODO: technically this should be a Long, but that triggers a pre-existing JsonProtocol bug
+    amount <- arbitrary[Long]
     discoveryScript <- arbitrary[String]
     vendor <- arbitrary[String]
   } yield new ExecutorResourceRequest(
@@ -640,7 +640,7 @@ class JsonProtocolPropertyTests extends SparkFunSuite with ScalaCheckDrivenPrope
 
   val taskResourceRequestGen = for {
     resourceName <- arbitrary[String]
-    amount <- arbitrary[Int] // TODO: technically this should be a Double, but that triggers a pre-existing JsonProtocol bug
+    amount <- Gen.chooseNum[Double](0.0d, 0.5d)
   } yield new TaskResourceRequest(
     resourceName = resourceName,
     amount = amount
