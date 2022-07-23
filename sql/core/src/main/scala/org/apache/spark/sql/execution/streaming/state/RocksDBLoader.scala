@@ -56,9 +56,11 @@ object RocksDBLoader extends Logging {
       // loadLibraryCall() would call start() on an already-started thread, causing a
       // java.lang.IllegalThreadStateException error.
       if (loadLibraryThread.getState == Thread.State.NEW) {
+        logInfo("RocksDB library loading thread started")
         loadLibraryThread.start()
+      } else {
+        logInfo("RocksDB library loading thread was started by a previous caller")
       }
-      logInfo("RocksDB library loading thread started")
       loadLibraryThread.join()
       exception.foreach(throw _)
       logInfo("RocksDB library loading thread finished successfully")
