@@ -2306,41 +2306,42 @@ class DAGSchedulerSuite extends SparkFunSuite with TempLocalSparkContext with Ti
     assertDataStructuresEmpty()
   }
 
-  test("accumulators are updated on exception failures and task killed") {
-    val acc1 = AccumulatorSuite.createLongAccum("ingenieur")
-    val acc2 = AccumulatorSuite.createLongAccum("boulanger")
-    val acc3 = AccumulatorSuite.createLongAccum("agriculteur")
-    assert(AccumulatorContext.get(acc1.id).isDefined)
-    assert(AccumulatorContext.get(acc2.id).isDefined)
-    assert(AccumulatorContext.get(acc3.id).isDefined)
-    val accUpdate1 = new LongAccumulator
-    accUpdate1.metadata = acc1.metadata
-    accUpdate1.setValue(15)
-    val accUpdate2 = new LongAccumulator
-    accUpdate2.metadata = acc2.metadata
-    accUpdate2.setValue(13)
-    val accUpdate3 = new LongAccumulator
-    accUpdate3.metadata = acc3.metadata
-    accUpdate3.setValue(18)
+  test("accumulators are updated on exception failures, fetch failures, and task killed") {
+    def doTest(makeReason: Seq[AccumulatorV2[_, _]] => TaskEndReason): Unit = {
+      val acc1 = AccumulatorSuite.createLongAccum("ingenieur")
+      val acc2 = AccumulatorSuite.createLongAccum("boulanger")
+      assert(AccumulatorContext.get(acc1.id).isDefined)
+      assert(AccumulatorContext.get(acc2.id).isDefined)
+      val accUpdate1 = new LongAccumulator
+      accUpdate1.metadata = acc1.metadata
+      accUpdate1.setValue(15)
+      val accUpdate2 = new LongAccumulator
+      accUpdate2.metadata = acc2.metadata
+      accUpdate2.setValue(13)
+      val accumUpdates = Seq(accUpdate1, accUpdate2)
+      val reason = makeReason(accumUpdates)
+      submit(new MyRDD(sc, 1, Nil), Array(0))
+      runEvent(makeCompletionEvent(taskSets.head.tasks.head, reason, "result"))
+      assert(AccumulatorContext.get(acc1.id).get.value === 15L)
+      assert(AccumulatorContext.get(acc2.id).get.value === 13L)
+    }
 
-    val accumUpdates1 = Seq(accUpdate1, accUpdate2)
-    val accumInfo1 = accumUpdates1.map(AccumulatorSuite.makeInfo)
-    val exceptionFailure = new ExceptionFailure(
-      new SparkException("fondue?"),
-      accumInfo1).copy(accums = accumUpdates1)
-    submit(new MyRDD(sc, 1, Nil), Array(0))
-    runEvent(makeCompletionEvent(taskSets.head.tasks.head, exceptionFailure, "result"))
+    // Test ExceptionFailure:
+    doTest { accumUpdates =>
+      val accumInfo = accumUpdates.map(AccumulatorSuite.makeInfo)
+      new ExceptionFailure(new SparkException("fondue?"), accumInfo).copy(accums = accumUpdates)
+    }
 
-    assert(AccumulatorContext.get(acc1.id).get.value === 15L)
-    assert(AccumulatorContext.get(acc2.id).get.value === 13L)
+    // Test TaskKilled:
+    doTest { accumUpdates =>
+      val accumInfo = accumUpdates.map(AccumulatorSuite.makeInfo)
+      new TaskKilled( "test", accumInfo, accums = accumUpdates)
+    }
 
-    val accumUpdates2 = Seq(accUpdate3)
-    val accumInfo2 = accumUpdates2.map(AccumulatorSuite.makeInfo)
-
-    val taskKilled = new TaskKilled( "test", accumInfo2, accums = accumUpdates2)
-    runEvent(makeCompletionEvent(taskSets.head.tasks.head, taskKilled, "result"))
-
-    assert(AccumulatorContext.get(acc3.id).get.value === 18L)
+    // Test FetchFailed:
+    doTest { accumUpdates =>
+      new FetchFailed(null, 0, 0, 0, 0, "reason", accumUpdates)
+    }
   }
 
   test("reduce tasks should be placed locally with map output") {
@@ -3901,7 +3902,7 @@ class DAGSchedulerSuite extends SparkFunSuite with TempLocalSparkContext with Ti
     val metadataFetchFailedEx = new MetadataFetchFailedException(
       shuffleDep.shuffleId, 1, "metadata failure");
     runEvent(makeCompletionEvent(
-      taskSets(1).tasks(1), metadataFetchFailedEx.toTaskFailedReason, null))
+      taskSets(1).tasks(1), metadataFetchFailedEx.toTaskFailedReason(Nil, Nil), null))
     assert(mapOutputTracker.getNumAvailableOutputs(shuffleDep.shuffleId) == parts)
   }
 

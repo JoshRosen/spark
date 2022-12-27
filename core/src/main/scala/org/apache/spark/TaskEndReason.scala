@@ -86,7 +86,9 @@ case class FetchFailed(
     mapId: Long,
     mapIndex: Int,
     reduceId: Int,
-    message: String)
+    message: String,
+    private[spark] val accums: Seq[AccumulatorV2[_, _]] = Nil,
+    private[spark] val metricPeaks: Seq[Long] = Seq.empty)
   extends TaskFailedReason {
   override def toErrorString: String = {
     val bmAddressString = if (bmAddress == null) "null" else bmAddress.toString

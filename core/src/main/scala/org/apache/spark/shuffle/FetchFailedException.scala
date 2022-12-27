@@ -18,8 +18,9 @@
 package org.apache.spark.shuffle
 
 import org.apache.spark.{FetchFailed, TaskContext, TaskFailedReason}
+
 import org.apache.spark.storage.BlockManagerId
-import org.apache.spark.util.Utils
+import org.apache.spark.util.{AccumulatorV2, Utils}
 
 /**
  * Failed to fetch a shuffle block. The executor catches this exception and propagates it
@@ -58,8 +59,19 @@ private[spark] class FetchFailedException(
   // because the TaskContext is not defined in some test cases.
   Option(TaskContext.get()).foreach(_.setFetchFailed(this))
 
-  def toTaskFailedReason: TaskFailedReason = FetchFailed(
-    bmAddress, shuffleId, mapId, mapIndex, reduceId, Utils.exceptionString(this))
+  def toTaskFailedReason(
+      accums: Seq[AccumulatorV2[_, _]],
+      metricPeaks: Seq[Long]): TaskFailedReason = {
+    FetchFailed(
+      bmAddress = bmAddress,
+      shuffleId = shuffleId,
+      mapId = mapId,
+      mapIndex = mapIndex,
+      reduceId = reduceId,
+      message = Utils.exceptionString(this),
+      accums = accums,
+      metricPeaks = metricPeaks)
+  }
 }
 
 /**

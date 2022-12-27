@@ -891,6 +891,9 @@ private[spark] class TaskSetManager(
       s"executor ${info.executorId}): ${reason.toErrorString}"
     val failureException: Option[Throwable] = reason match {
       case fetchFailed: FetchFailed =>
+        // FetchFailed might have accumulator updates
+        accumUpdates = fetchFailed.accums
+        metricPeaks = fetchFailed.metricPeaks.toArray
         logWarning(failureReason)
         if (!successful(index)) {
           successful(index) = true
