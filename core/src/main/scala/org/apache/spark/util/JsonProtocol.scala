@@ -48,6 +48,9 @@ import org.apache.spark.util.Utils.weakIntern
 private[spark] class JsonProtocolOptions(conf: SparkConf) {
   val includeTaskMetricsAccumulators: Boolean =
     conf.get(EVENT_LOG_INCLUDE_TASK_METRICS_ACCUMULATORS)
+
+  val includeAllZeroTaskExecutorMetrics: Boolean =
+    conf.get(EVENT_LOG_INCLUDE_ALL_ZERO_TASK_EXECUTOR_METRICS)
 }
 
 /**
@@ -212,8 +215,17 @@ private[spark] object JsonProtocol {
     taskEndReasonToJson(taskEnd.reason, g)
     g.writeFieldName("Task Info")
     taskInfoToJson(taskEnd.taskInfo, g, options, includeAccumulables = true)
-    g.writeFieldName("Task Executor Metrics")
-    executorMetricsToJson(taskEnd.taskExecutorMetrics, g)
+    // SPARK-42206: if all metrics are zero (which is often the case when
+    // spark.executor.metrics.pollingInterval = 0 (the default config) and tasks complete
+    // between executor heartbeats) then omit the metrics field in order to save space
+    // in the event log JSON. The Spark History Server already treats missing metrics
+    // as all zero values, so this change has no impact on history server UI reconstruction.
+    if (
+      options.includeAllZeroTaskExecutorMetrics ||
+        !taskEnd.taskExecutorMetrics.allMetricsAreZero()) {
+      g.writeFieldName("Task Executor Metrics")
+      executorMetricsToJson(taskEnd.taskExecutorMetrics, g)
+    }
     Option(taskEnd.taskMetrics).foreach { m =>
       g.writeFieldName("Task Metrics")
       taskMetricsToJson(m, g)

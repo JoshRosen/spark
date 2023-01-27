@@ -377,6 +377,18 @@ class JsonProtocolSuite extends SparkFunSuite {
     assert(newMetrics.peakExecutionMemory == 0)
   }
 
+  test("Task Executor Metrics backward compatibility") {
+    // The "Task Executor Metrics" field was introduced in Spark 3.0.0 in SPARK-23429
+    val oldJson = taskEndJsonString.removeField("Task Executor Metrics")
+    val oldTaskEnd = JsonProtocol.taskEndFromJson(oldJson)
+    val newTaskEnd = JsonProtocol.taskEndFromJson(taskEndJsonString)
+    assert(oldTaskEnd.taskExecutorMetrics != newTaskEnd.taskExecutorMetrics)
+    assert(oldTaskEnd.taskExecutorMetrics.isSet())
+    ExecutorMetricType.metricToOffset.keys.foreach { metric =>
+      assert(oldTaskEnd.taskExecutorMetrics.getMetricValue(metric) == 0)
+    }
+  }
+
   test("StorageLevel backward compatibility") {
     // "Use Off Heap" was added in Spark 3.4.0
     val level = StorageLevel(
@@ -893,6 +905,26 @@ class JsonProtocolSuite extends SparkFunSuite {
     // Deliberately not fixed for job starts because a job might legitimately reference
     // stages that have completed even before the job start event is emitted.
     testEvent(jobStart, sparkEventToJsonString(jobStart))
+  }
+
+  test("SPARK-42206: skip logging of all-zero Task Executor Metrics") {
+    val allZeroTaskExecutorMetrics = new ExecutorMetrics(Map.empty[String, Long])
+    val taskEnd = taskEndFromJson(taskEndJsonString)
+      .copy(taskExecutorMetrics = allZeroTaskExecutorMetrics)
+
+    // Test new default behavior:
+    val newOptions = new JsonProtocolOptions(
+      new SparkConf().set(EVENT_LOG_INCLUDE_ALL_ZERO_TASK_EXECUTOR_METRICS, false))
+    val newJson = sparkEventToJsonString(taskEnd, newOptions)
+    assertEquals(taskEnd, taskEndFromJson(newJson))
+    assert(!newJson.has("Task Executor Metrics"))
+
+    // Test backwards compatibility flag:
+    val oldOptions = new JsonProtocolOptions(
+      new SparkConf().set(EVENT_LOG_INCLUDE_ALL_ZERO_TASK_EXECUTOR_METRICS, true))
+    val oldJson = sparkEventToJsonString(taskEnd, oldOptions)
+    assertEquals(taskEnd, taskEndFromJson(oldJson))
+    assert(oldJson.has("Task Executor Metrics"))
   }
 }
 
