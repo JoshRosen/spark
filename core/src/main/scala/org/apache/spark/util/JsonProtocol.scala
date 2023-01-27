@@ -153,7 +153,8 @@ private[spark] object JsonProtocol {
     g.writeStartObject()
     g.writeStringField("Event", SPARK_LISTENER_EVENT_FORMATTED_CLASS_NAMES.stageSubmitted)
     g.writeFieldName("Stage Info")
-    stageInfoToJson(stageSubmitted.stageInfo, g, options)
+    // SPARK-42205: don't log accumulables in start events:
+    stageInfoToJson(stageSubmitted.stageInfo, g, options, includeAccumulables = false)
     Option(stageSubmitted.properties).foreach { properties =>
       g.writeFieldName("Properties")
       propertiesToJson(properties, g)
@@ -168,7 +169,7 @@ private[spark] object JsonProtocol {
     g.writeStartObject()
     g.writeStringField("Event", SPARK_LISTENER_EVENT_FORMATTED_CLASS_NAMES.stageCompleted)
     g.writeFieldName("Stage Info")
-    stageInfoToJson(stageCompleted.stageInfo, g, options)
+    stageInfoToJson(stageCompleted.stageInfo, g, options, includeAccumulables = true)
     g.writeEndObject()
   }
 
@@ -181,7 +182,8 @@ private[spark] object JsonProtocol {
     g.writeNumberField("Stage ID", taskStart.stageId)
     g.writeNumberField("Stage Attempt ID", taskStart.stageAttemptId)
     g.writeFieldName("Task Info")
-    taskInfoToJson(taskStart.taskInfo, g, options)
+    // SPARK-42205: don't log accumulables in start events:
+    taskInfoToJson(taskStart.taskInfo, g, options, includeAccumulables = false)
     g.writeEndObject()
   }
 
@@ -193,7 +195,7 @@ private[spark] object JsonProtocol {
     g.writeStartObject()
     g.writeStringField("Event", SPARK_LISTENER_EVENT_FORMATTED_CLASS_NAMES.taskGettingResult)
     g.writeFieldName("Task Info")
-    taskInfoToJson(taskInfo, g, options)
+    taskInfoToJson(taskInfo, g, options, includeAccumulables = true)
     g.writeEndObject()
   }
 
@@ -209,7 +211,7 @@ private[spark] object JsonProtocol {
     g.writeFieldName("Task End Reason")
     taskEndReasonToJson(taskEnd.reason, g)
     g.writeFieldName("Task Info")
-    taskInfoToJson(taskEnd.taskInfo, g, options)
+    taskInfoToJson(taskEnd.taskInfo, g, options, includeAccumulables = true)
     g.writeFieldName("Task Executor Metrics")
     executorMetricsToJson(taskEnd.taskExecutorMetrics, g)
     Option(taskEnd.taskMetrics).foreach { m =>
@@ -228,7 +230,12 @@ private[spark] object JsonProtocol {
     g.writeNumberField("Job ID", jobStart.jobId)
     g.writeNumberField("Submission Time", jobStart.time)
     g.writeArrayFieldStart("Stage Infos")  // Added in Spark 1.2.0
-    jobStart.stageInfos.foreach(stageInfoToJson(_, g, options))
+    // SPARK-42205: here, we purposely include accumulables so that we accurately log all
+    // available information about stages that may have already completed by the time
+    // the job was submitted: it is technically possible for a stage to belong to multiple
+    // concurrent jobs, so this situation can arise even without races occurring between
+    // event logging and stage completion.
+    jobStart.stageInfos.foreach(stageInfoToJson(_, g, options, includeAccumulables = true))
     g.writeEndArray()
     g.writeArrayFieldStart("Stage IDs")
     jobStart.stageIds.foreach(g.writeNumber)
@@ -427,7 +434,8 @@ private[spark] object JsonProtocol {
   def stageInfoToJson(
       stageInfo: StageInfo,
       g: JsonGenerator,
-      options: JsonProtocolOptions): Unit = {
+      options: JsonProtocolOptions,
+      includeAccumulables: Boolean): Unit = {
     g.writeStartObject()
     g.writeNumberField("Stage ID", stageInfo.stageId)
     g.writeNumberField("Stage Attempt ID", stageInfo.attemptNumber)
@@ -444,10 +452,15 @@ private[spark] object JsonProtocol {
     stageInfo.completionTime.foreach(g.writeNumberField("Completion Time", _))
     stageInfo.failureReason.foreach(g.writeStringField("Failure Reason", _))
     g.writeFieldName("Accumulables")
-    accumulablesToJson(
-      stageInfo.accumulables.values,
-      g,
-      includeTaskMetricsAccumulators = options.includeTaskMetricsAccumulators)
+    if (includeAccumulables) {
+      accumulablesToJson(
+        stageInfo.accumulables.values,
+        g,
+        includeTaskMetricsAccumulators = options.includeTaskMetricsAccumulators)
+    } else {
+      g.writeStartArray()
+      g.writeEndArray()
+    }
     g.writeNumberField("Resource Profile Id", stageInfo.resourceProfileId)
     g.writeBooleanField("Shuffle Push Enabled", stageInfo.isShufflePushEnabled)
     g.writeNumberField("Shuffle Push Mergers Count", stageInfo.shuffleMergerCount)
@@ -457,7 +470,8 @@ private[spark] object JsonProtocol {
   def taskInfoToJson(
       taskInfo: TaskInfo,
       g: JsonGenerator,
-      options: JsonProtocolOptions): Unit = {
+      options: JsonProtocolOptions,
+      includeAccumulables: Boolean): Unit = {
     g.writeStartObject()
     g.writeNumberField("Task ID", taskInfo.taskId)
     g.writeNumberField("Index", taskInfo.index)
@@ -473,10 +487,15 @@ private[spark] object JsonProtocol {
     g.writeBooleanField("Failed", taskInfo.failed)
     g.writeBooleanField("Killed", taskInfo.killed)
     g.writeFieldName("Accumulables")
-    accumulablesToJson(
-      taskInfo.accumulables,
-      g,
-      includeTaskMetricsAccumulators = options.includeTaskMetricsAccumulators)
+    if (includeAccumulables) {
+      accumulablesToJson(
+        taskInfo.accumulables,
+        g,
+        includeTaskMetricsAccumulators = options.includeTaskMetricsAccumulators)
+    } else {
+      g.writeStartArray()
+      g.writeEndArray()
+    }
     g.writeEndObject()
   }
 
@@ -487,7 +506,7 @@ private[spark] object JsonProtocol {
   def accumulablesToJson(
       accumulables: Iterable[AccumulableInfo],
       g: JsonGenerator,
-    includeTaskMetricsAccumulators: Boolean = true): Unit = {
+      includeTaskMetricsAccumulators: Boolean = true): Unit = {
     g.writeStartArray()
     accumulables
         .filterNot { acc =>
